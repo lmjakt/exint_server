@@ -45,14 +45,13 @@
 
 using namespace std;                   // USE port 8090 for experimental.. 
 
-//const ProbeSetSet2 pSet("expression");
 
 Server::Server(const char* db, int port, const char* dataTable, QObject* parent, const char* name) :
   QServerSocket(port, 0, parent, name)
 {
   // hope that works, I've seens something like this somewhere else, maybe in the tutorial 
   if( !ok() ){
-    cerr << "Failed to bind to port 8108" << endl;
+    cerr << "Failed to bind to port" << port << endl;
     exit(1);       
   }
   cout << "Seems that the socket got created after all, how strange!! " << endl;
@@ -63,10 +62,6 @@ Server::Server(const char* db, int port, const char* dataTable, QObject* parent,
   conninfo = "dbname=";
   conninfo.append(db);
  
-  //#ifdef EXPERIMENTAL_SERVER 
-  //conninfo = "dbname=expression_2";
-  //cout << "Experimental server is defined : " << endl;
-  //#endif
   cout << "conninfo is " << conninfo << endl;
   
   //  const char* cinfo = conninfo.c_str();
@@ -74,56 +69,12 @@ Server::Server(const char* db, int port, const char* dataTable, QObject* parent,
   cout << "size of probe set is " << sizeof(pSet) << endl;
   cout << "Sizeo of a pointer to probe set is : " << sizeof(&pSet) << endl;
 
-  // let's try to create a shared memory segment.. hmm
-  //void* sharedSet;      // but make this a pointer to the pSet.. and see if we can access it..
- //  char c;
-//   int shmid;
-//   //int shsize = 27;
-//   int shsize = sizeof(ProbeSetSet2*);
-//   //char *shm, *s;
-//   ProbeSetSet2* shm;
-//   //  int shsize = sizeof(&pSet);
-//   //  int shsize = sizeof(ProbeSetSet2);
-//   int key = 56789;
-//   if ((shmid = shmget(key, shsize, IPC_CREAT | 0666)) < 0) {
-//     cerr << "couldn't create shmid .. bugger " << endl ;
-//     exit(1);
-//   }
-//   cout << "smid is : " << shmid << endl;
-//   // and try to attach it.. hmm 
-//   //sharedSet = shmat(shmid, NULL, 0);
-//   shm = (ProbeSetSet2*)shmat(shmid, NULL, 0);
-  
-//   if((int)shm == -1){
-//     //  if((int)sharedSet == -1){
-//     cerr << "couldn't attach memory, what's going on " << endl;
-//     //cerr << "shared set is : " << (int)sharedSet << endl;
-//     exit(1);
-//   }
-//   //sharedSet = (void*)&pSet;
-//   //s = shm;       // just a pointer...
-//   //for(c = 'a'; c <= 'z'; c++){
-//   //  *s++ = c;
-//   //}
-//   //(*s) = NULL; 
-//   shm = &pSet;
-//   cout << "Address of pSet is   : " << &pSet << endl
-//        << "Value of sharedSet : " << shm << endl
-//        << "Address of the pSet is : " << &pSet << endl
-//        << "Location of ShardSet : " << &shm << endl;
-
-
   cout << "pSet loaded" << endl;
   cout << "Socket created and data loaded" << endl;;
 }
 
 Server::~Server(){
-  // close the current connection,, -but how do I know if there is one??
-  // map<QSocket*, ConnectionObject*>::iterator it;
-  //for(it = connections.begin(); it != connections.end(); it++){
-  //  delete connections[it->first];      // this should cause the socket to be closed by the destructor function.
-  //  delete it->first;                   // might take some time as I'm writing to each socket.. 
-  //}
+  //// NEED SOME CODE HERE //// 
 }
 
 void Server::newConnection(int socket){
@@ -131,10 +82,7 @@ void Server::newConnection(int socket){
   QSocketDevice* s = new QSocketDevice();
   s->setSocket(socket, QSocketDevice::Stream);
   connections[s] = new ConnectionObject(s, &pSet, (QWidget*)this);
-  //connect(connections[s], SIGNAL(deleteMe(QSocket*)), this, SLOT(discardClient(QSocket*)) );
-  //connect(connections[s], SIGNAL(statusMessage(QString)), this, SIGNAL(statusMessage(QString)) );
-  //connections[s]->start();
-  //cout << "new connection object created and connections set up" << endl;;
+
 }
 
 void Server::discardClient(QSocketDevice* socket){
@@ -143,7 +91,6 @@ void Server::discardClient(QSocketDevice* socket){
   cout << "memory   address    : " << socket << endl;
   clientCounter++;
 
-  //delete connections[socket->socket()];
   if(connections.find(socket) != connections.end()){
     // wait one second for the thread to terminate..
     commandCounter += connections[socket]->commandCounter;

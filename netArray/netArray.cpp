@@ -145,11 +145,17 @@ int NetArray::appendFromSocket(int socketNumber, int length){
   return(-errno);
 }
 
-char* NetArray::readBinaryFromSocket(int socketNumber, int length){
+char* NetArray::readBinaryFromSocket(int socketNumber, int length, bool zeroTerminated){
   // read the number of bytes specified by the argument into a char array,,,
   // first take the immediate bytes in the data array and copy up to length 
   // bytes.. -if need more than read directly into the new char*,, -then empty the data array (for completeness)..
-  char* rdata = new char[length];
+  char* rdata = 0;
+  if(!zeroTerminated){
+    rdata = new char[length];
+  }else{
+    rdata = new char[length + 1];
+    rdata[length] = 0;
+  }
   int i;
   for(i=0; i < length; i++){
     readPos++;

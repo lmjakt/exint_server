@@ -40,7 +40,7 @@ class NetArray {
   void fapp(float f);
   void dapp(double d);
 
-  char* readBinaryFromSocket(int socketNumber, int length);   // returns a null value on failure (and deletes the data).. 
+  char* readBinaryFromSocket(int socketNumber, int length, bool zeroTerminated=false);   // returns a null value on failure (and deletes the data).. 
                                                               // on sucess the user has to take care of deleting the data.. 
   int appendFromSocket(int socketNumber, int length);
   char* readChar();

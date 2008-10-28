@@ -59,7 +59,7 @@
 #include <crypt.h>
 #include <stdlib.h>
 #include <math.h>
-#include <algo.h>      // for sort();
+#include <algorithm>      // for sort();
 #include <stdlib.h>     // for rand()
 #include <sstream>
 #include <netinet/in.h>
@@ -79,16 +79,6 @@ struct comp_set : public binary_function<float, float, bool> {
 struct r_comp_set : public binary_function<float, float, bool> {
   bool operator()(dist_set x, dist_set y) { return x.value > y.value; }
 };
-
-/////////////////////////////////////////////////////////////////////
-
-//QMutex annotationMutex;
-//QMutex sessionMutex;
-//QMutex userMutex;     // used when changing the userTable, annotationInformation or sessionInformation data structures. 
-
-////////////////////////////
-// -- change these to be owned by the ProbeSetSet pSet and be public, so that I access them through the pointers.. 
-///////////////////////////
 
 ConnectionObject::ConnectionObject(QSocketDevice* s, ProbeSetSet2* p, QWidget* sp){
   //dataWait = QWaitCondition();
@@ -885,12 +875,9 @@ void ConnectionObject::doEuclidCompare(){
     
 
 bool ConnectionObject::authenticate(){
-    //The crypt algorithm returns 13 char,, which is kind of useful, such that we can 
-  //just read in 13 characters, and see if they match..
-  // except It seems that I can't use the crypt method in windows, so I'm just 
-  // supplying my own method. It's not so good, but,, there you go.. 
-  // read in three ints in binary format,, and compare against three ints in somewhere else..
-
+  // I used to use the crypt() function, but since I was unable to find it on Windows
+  // I gave up and wrote my own stupid little function that converts the password into
+  // three integer values using a one-way function. Probably not very secure, but..
 
   cout << "trying to authenticate.. " << endl;
   char* data = inData->readBinaryFromSocket(socketNumber, 4);   // gets created by function.. 
@@ -898,78 +885,49 @@ bool ConnectionObject::authenticate(){
     cerr << "Connection Broken or other error return false " << endl;
     return(false);
   }
-  //delete data;
-  //data = inData->readBinaryFromSocket(socketNumber, 4);   // gets created by function.. 
-  //socket->readBlock(data, 4);
   int userLength = *(int*)data;
   userLength = ntohl(userLength);  // change the order..
   delete data;
   // then get the string..
-  // I really should use something different for the below function.. 
-  QString user;
-  while(socket->bytesAvailable() < userLength){
-    dataWait.wait(10);
+  char* cuname = inData->readBinaryFromSocket(socketNumber, userLength, true);  // zero terminated string
+  if(!cuname){
+    cerr << "ConnectionObject::autheticate Unable to get user name returning false" << endl;
+    return(false);
   }
-  for(int i=0; i < userLength; i++){
-    user.append(socket->getch());
-  }
-  currentUserName = user.latin1();    // ugly as hell, I know.. but might as well make it here.. 
-  // then I should have 3 longs,, -make  
-  int key1 = 0;
-  int key2 = 0;
-  int key3 = 0;
-  //cout << "bytes available : " << socket->bytesAvailable() << endl;
-  //while(socket->bytesAvailable() < 12){
-  //  dataWait.wait(10);
-  //}
-  data = inData->readBinaryFromSocket(socketNumber, 4);  
+  currentUserName = cuname;
+  delete cuname;
+
+  // then I should get 3 keys  
+  // not sure if should be sizeof(int) or just f. In any case doing the wrong thing will screw things up
+  data = inData->readBinaryFromSocket(socketNumber, sizeof(int) * 3);  
   if(!data){
     cerr << "Connection Broken or other error return false " << endl;
     return(false);
   }
-  //socket->readBlock(data, 4);
-  key1 = ntohl(*(int*)data);
+  int key1 = ntohl(*(int*)data);
+  int key2 = ntohl(*(int*)(data + sizeof(int)) );
+  int key3 = ntohl(*(int*)(data + sizeof(int) * 2) );
   delete data;
-  data = inData->readBinaryFromSocket(socketNumber, 4);  
-  if(!data){
-    cerr << "Connection Broken or other error return false " << endl;
-    return(false);
-  }
-  //  socket->readBlock(data, 4);
-  key2 = ntohl(*(int*)data);
-  delete data;
-  data = inData->readBinaryFromSocket(socketNumber, 4);  
-  if(!data){
-    cerr << "Connection Broken or other error return false " << endl;
-    return(false);
-  }
-  //  socket->readBlock(data, 4);
-  key3 = ntohl(*(int*)data);
-  delete data;
-  cout << "User : " << user << endl;
-  //     << "key 1: " << key1 << endl
-  //     << "key 2: " << key2 << endl
-  //     << "key 3: " << key3 << endl;
+
+  cout << "User : " << currentUserName << endl;
   
-  // rather now we have to look up the key.. in the users table,, no less.. 
+  // look up the key.. in the users table.. 
   ostringstream query;       // thread safe???? maybe not.. hmm. 
-  query << "select index from users where user_name = '" << user << "' and key1 = " << key1 << " and key2 = " << key2 << " and key3 = " << key3;
+  query << "select index from users where user_name = '" << currentUserName << "' and key1 = " << key1 << " and key2 = " << key2 << " and key3 = " << key3;
   // and then we just have to see if we return anything.. 
-  //cout << query.str() << endl;
-  
-  //const char* conninfo = "dbname=expression";
-  //cout << "conninfo is : " << conninfo << endl;
+
+  // I don't quite remember why I'm using the PgCursor interface. I have a feeling that it is broken
   PgCursor conn(conninfo, "portal");
   if(conn.ConnectionBad()){
-    cerr << "connection not good" << endl;
+    cerr << "ConnectionObject::authenticate db connection not good" << endl;
     return(false);
   }
   if(!conn.Declare(query.str().c_str())){
-    cerr << "command didn't work: " << query << endl;
+    cerr << "ConnectionObject::authenticate conn.declare command didn't work: " << query << endl;
     return(false);
   }
   if(!conn.Fetch()){
-    cerr << "couldn't fetch the data" << endl;
+    cerr << "ConnectionObject::authenticate conn.fetch didn't fetch anything" << endl;
     return(false);
   }
   int tuples = conn.Tuples();
@@ -979,31 +937,8 @@ bool ConnectionObject::authenticate(){
     logInTime = time(&logInTime);
     logIn();
     return(true);
-  }else{
-    return(false);
   }
-  //  QString userKey;
-  //  const char* plainText = "HejsanSvejsan";
-  //const char* salt = "SM";
-  //QString progKey(crypt(plainText, salt));
-  //cout << "and the encrypted key is: " << progKey << endl;
-//    if(socket->bytesAvailable() >= 13){
-//      for(int i=0; i < 13; i++){
-//        userKey.append((char)socket->getch());
-//      }
-//    }
-//    if(userKey.compare(progKey) == 0){
-//      cout << "keys Match, ho yeaahh" << endl;
-//      cout << "users Key: " << userKey << endl;
-//      authenticated = true;
-//      return(true);
-//    }
-//    cout << "Users key " << userKey << endl;
-//    cout << "Keys don't match, authentication failing, but ignoring for the time being.. " << endl;
-  //authenticated = true;
-  //qApp->unlock();
-  //cout << "Authenticate function: unlocked the mutex" << endl;
-  //return(true);
+  return(false);
 }
 
 void ConnectionObject::logIn(){
