@@ -23,6 +23,7 @@
 //End Copyright Notice
 
 #include "server/server.h"
+#include "version.h"
 #include <qstring.h>
 #include <qapplication.h>
 #include <string>
@@ -51,7 +52,8 @@ int main(int argc, char** argv){
   }
 
   int c;
-  while((c = getopt(argc, argv, "d:p:t:")) != -1){
+  bool report_version = false;
+  while((c = getopt(argc, argv, "d:p:t:v")) != -1){
     switch(c){
     case 'd':
       db = optarg;
@@ -62,11 +64,19 @@ int main(int argc, char** argv){
     case 't':
       dataTable = optarg;
       break;
+    case 'v':
+      report_version = true;
+      break;
     case '?':
       cerr << "Unknown option : " << c << endl;
     default :
       abort();
     }
+  }
+
+  if(report_version){
+    cout << "mtserver version " << server_version << endl << version_info << endl;
+    exit(0);
   }
 
   cout << "port is : " << port << "  database is : " << db << endl;

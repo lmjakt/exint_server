@@ -1,0 +1,65 @@
+This application is useless without having the appropriate databases set up. For more information
+about this, and various databases communicate directly with me, or have a look around in some
+appropriate places (see end of this).
+
+To install:
+
+Check the documentation found at:
+http://www.cdb.riken.jp/scb/documentation.html
+
+Since that might not be up to date, or since it might have disappeared,
+here is a short description of the process and requirements.
+
+1. Make sure to have the Qt (version 3) development libraries installed.
+
+2. Make sure to have Postgresql installed along with the old C++ interface called libpq++.
+
+3. Have some idea as to where the above two are located.
+
+4. Make a Makefile using the qmake command..
+
+> qmake -o Makefile mtserver.pro
+
+5. Edit the Makefile to make it useful. You'll need to :
+	a. Add 
+		-DHAVE_NAMESPACE_STD -DHAVE_CXX_STRING_HEADER -DDLLIMPORT=""
+	to the end of the CXXFLAGS = line. (This is something to do with the
+	libpq++ libraries, and is something I don't really understand).
+	b. Add
+		-I/usrlocal/pgsql/include
+	to the end of the INCPATH = line. Or change the above to where the include
+	files have been installed. If postgresql has been installed using an rpm
+	or other package management system, then the above path will be different.
+	You may still need to add something like that, since you'll almost certainly
+	have to install the libpq++ libraries yourself somewhere.
+	c. Add 
+		-L/usr/local/pgsql/lib
+		-lpq++
+	to the LIBS = line, in an appropriate manner. (See the 
+	Makefile_with_pq_solving_thing for an example how to do this, or look
+	at the old Makefile distributed with this source code before you
+	run qmake.)
+
+6. Run 'make', or possibly 'make clean' followed by 'make'.
+
+7. Find some documentation as to what to do with the mtserver application.
+
+
+*************************************************************************
+
+Useful information. Currently there is some not completely up to date documentation at:
+
+http://www.cdb.riken.jp/scb/documentation/index.html
+
+but I rather suspect that will change with time. Hence to find out something more about the
+system, google for 'eXintegrator' or to contact me, google for 'Martin Jakt'. Presently I can
+be contacted on mjakt@cdb.riken.jp.
+
+if you got this far.. good luck..
+
+Martin Jakt
+Stem Cell Biology Group
+Riken Center for Developmental Biology
+Kobe
+
+31-10-08

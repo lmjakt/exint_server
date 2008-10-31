@@ -2751,27 +2751,12 @@ void ConnectionObject::writeProbeData(probe_data* pdata){
   //cout << "\tFinished writing probe data to the socket" << endl; 
 }
 
-// void ConnectionObject::writeFloat(float f){
-//   socket->writeBlock((const char*)&f, 4);
+// bool ConnectionObject::connected(){
+//   if(socket->error() == QSocketDevice::NoError){      // I need to change this somewhere.. 
+//     return(true);
+//   }
+//   return(false);
 // }
-
-// void ConnectionObject::writeString(string s){
-//   int size = s.size()+1;
-//   writeInt(size);
-//   socket->writeBlock(s.c_str(), size);
-// }
-
-// void ConnectionObject::writeInt(int i){
-//   socket->writeBlock((const char*)&i, 4);
-// }
-  
-
-bool ConnectionObject::connected(){
-  if(socket->error() == QSocketDevice::NoError){      // I need to change this somewhere.. 
-    return(true);
-  }
-  return(false);
-}
 
 // Some statistical stuff::
 

@@ -1,6 +1,7 @@
 TEMPLATE = app
 CONFIG = qt release pgsql thread
-HEADERS = 	server/server.h \
+HEADERS = 	version.h \
+		server/server.h \
 		server/connectionobject.h \
 		raw/probe_set.h \
 		raw/probeSetSet2.h \

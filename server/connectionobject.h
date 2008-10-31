@@ -264,7 +264,8 @@ class ConnectionObject : public QObject, public QThread
   void readClientIndex();                    // not really read as its more a case of parsing the lastCommand variable.. and setting the clientIndex vector
   void setClientChips();                      // set all the client chips. erase everything.. then insert the stuff if appropriate. 
   bool authenticate();
-  bool connected();         // just a convenience function,, checks the state of the socket..
+
+  //  bool connected();         // just a convenience function,, checks the state of the socket..
   
   float** copyProbes(float** p, int ps, int es);   // ps- probe no,  es -experiment size, 
   void delProbes(float** p, int ps);
