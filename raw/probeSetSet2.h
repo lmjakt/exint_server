@@ -34,7 +34,10 @@
 #include <fstream>
 #include <qmutex.h>
 
-using namespace std;    //??
+// this was supposed to be very simple. Should rewrite with reasonable accessor
+// functions rather than having everything public.
+
+using namespace std;    // bad
 
 
 class ProbeSetSet2
@@ -42,6 +45,8 @@ class ProbeSetSet2
  public:
   ProbeSetSet2(const char* cinfo, const char* dataTable="data");            // initialiase from database..
   ProbeSetSet2();                         // do nothing??
+  
+  vector<int> expandIndexByGenomeLinkage(vector<uint> ind);
 
   vector<probe_set*> data;                // lots of work to fix, but what the hell
   probe_set* emptySet;                    // a stupid kludge to overcome some trouble.. 

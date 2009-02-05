@@ -87,10 +87,40 @@ ProbeSetSet2::ProbeSetSet2(const char* cinfo, const char* dataTable){
   setData(conninfo, dataTable);
 }
 
+////////// Warning. This function expects to get a set of internal array offsets, starting from 0.
+////////// However, the indices are all in db identifiers counting from 1. 
+////////// Don't ask why; it's stupid and historical.
+////////// To complicate issue it returns the database identifiers. What a tangled web we weave,,
+vector<int> ProbeSetSet2::expandIndexByGenomeLinkage(vector<uint> ind){
+  vector<int> newIndex;
+  set<int> newIndSet;
+  newIndex.reserve(ind.size() * 2);
+  for(uint i=0; i < ind.size(); ++i){
+    int psi = (int)ind[i] + 1;
+    if(newIndSet.count(psi))
+      continue;
+    newIndex.push_back(psi);
+    newIndSet.insert(psi);
+    if(!probeSetEnsemblIndex.count(psi))
+      continue;
+    
+    int ensIndex = probeSetEnsemblIndex[psi];
+    multimap<int, int>::iterator it;
+    for(it = ensemblProbeSetIndex.lower_bound(ensIndex); it != ensemblProbeSetIndex.upper_bound(ensIndex); ++it){
+      if(it->second != psi && !newIndSet.count(it->second)){
+	newIndex.push_back(it->second);
+	newIndSet.insert(it->second);
+      }
+    }
+  }
+  return(newIndex);
+}
+
+
 void ProbeSetSet2::setData(const char* conninfo, const char* tableName){
   //cout << "at the beginning of setData" << endl;
   //string conninfo("dbname=");
-  //conninfo += dbname;
+  //conninfo += dbname;2375
   PgCursor cursor(conninfo, "portal");
   if(cursor.ConnectionBad()){
     cerr << "Connection to Database " << conninfo << " failed"

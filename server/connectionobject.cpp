@@ -342,6 +342,11 @@ void ConnectionObject::parseCommand(){
     doGenDBLookup();
     return;
   }
+  if(lastCommand == "expandIndexByGeneId"){
+    cout << "calling expandIndexByGeneId" << endl;
+    expandIndexByGeneId();
+    return;
+  }
     
   if(lastCommand == QString("closingConnection")){
     cout << "got a closingConnection call" << endl;
@@ -714,7 +719,7 @@ void ConnectionObject::sendProbeSet(){
   //cout << "socket number " << socketNumber << "  SendProbeSet : regionSize is : " << regionSize << endl;
   uint i = words[0].toInt(&ok);
   //cout << "\t\tSEND PROBE SET INDEX IS : (before decrement) " << i << endl;
-  if(ok){
+  if(ok && i > 0){
     i--;                         // db counts from 1, index counts from 0 
     if(i < pSet->data.size()){
       cout << "\tcalling writeProbeSet i: " << i << endl;
@@ -2349,6 +2354,13 @@ void ConnectionObject::doGenDBLookup(){
   sApp("<clientRegionsChangedEnd>");
   writeArray();       // which is very simple.. but now I need a function to send these regions. Well, I sort of have, don't I.. 
 }
+
+void ConnectionObject::expandIndexByGeneId(){
+  if(!clientIndex.size())
+    return;
+  vector<int> newIndex = pSet->expandIndexByGenomeLinkage(clientIndex);
+  writeIndex(newIndex, "Gene Expanded Index");
+}
     
 void ConnectionObject::writeIndex(vector<uint> v, string term, bool setClientIndex){      // ugly hack,, to allow certain things..
   vector<int> v2(v.size());
@@ -2371,8 +2383,11 @@ void ConnectionObject::writeIndex(vector<int> v, string term, bool setClientInde
     if(v[i] > 0 && v[i] <= pSet->data.size() && pSet->data[v[i]-1]->index && clientChips.count(pSet->probeData[v[i]-1].chip)){
       tv.push_back(v[i]);
     }
-    if(setClientIndex){   // which is default behaviour.. 
-      v2[i] = (uint)v[i];
+    /////////// WARNING this modification might screw up old functions. But it is clearly incorrect. The internal
+    /////////// client Index contains the array offsets, not the db ids (what a stupid, stupid decision). This function
+    /////////// expects to send and receive the database ids. Lets hope there isn't too much to fix here.
+    if(setClientIndex && v[i] > 0){   // which is default behaviour.. 
+      v2[i] = (uint)v[i] - 1;
     }
   }
   if(setClientIndex){

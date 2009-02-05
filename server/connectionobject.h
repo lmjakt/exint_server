@@ -165,6 +165,7 @@ class ConnectionObject : public QObject, public QThread
   void sendRegion();
   void doDBLookup();       // look up query in database, write as separate function !!
   void doGenDBLookup();    // look up genomic regions as opposed to database positions.. 
+  void expandIndexByGeneId();  // expand the current client index by gene id's. (i.e. after a sort operation).
 
   void writeStatus(statusMessage message);      // Tell the client if something worked or not, and give information as to why. 
   void writeDBChoices();   // tell the client what kinf of databaes lookups it can do.. 
