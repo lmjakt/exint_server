@@ -101,7 +101,7 @@ vector<int> ProbeSetSet2::expandIndexByGenomeLinkage(vector<uint> ind){
       continue;
     newIndex.push_back(psi);
     newIndSet.insert(psi);
-    if(!probeSetEnsemblIndex.count(psi))
+    if(!probeSetEnsemblIndex.count(psi) || !probeSetEnsemblIndex[psi])
       continue;
     
     int ensIndex = probeSetEnsemblIndex[psi];
