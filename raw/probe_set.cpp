@@ -29,7 +29,8 @@
 #include <string>
 #include <qstring.h>
 #include <libpq++.h>
-#include <algo.h>
+#include <algorithm>
+#include <stdlib.h>
 #include "probe_set.h"
 
 using namespace std;

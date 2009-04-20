@@ -1,7 +1,7 @@
 // some statistical functions like, hope this works..
 
 #include <math.h>
-#include <algo.h>
+#include <algorithm>
 #include <vector>
 #include "stat.h"
 #include <iostream>

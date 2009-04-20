@@ -30,6 +30,7 @@
 #include <libpq++.h>
 #include <sstream>
 #include <iostream>
+#include <stdlib.h>
 
 using namespace std;
 

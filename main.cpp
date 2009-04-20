@@ -28,6 +28,7 @@
 #include <qapplication.h>
 #include <string>
 #include <vector>
+#include <stdlib.h>
 #include <unistd.h>
 
 int main(int argc, char** argv){
