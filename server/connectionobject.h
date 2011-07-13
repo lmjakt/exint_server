@@ -157,6 +157,7 @@ class ConnectionObject : public QObject, public QThread
   void logIn();
   void logOut();  // these change the tables user_log
   int dbCommand(string cmd);  // connect to the database and execute the command. Return CmdTuples or -1 if some problem
+  char* getLargeObject(int oid, int& length);
 
   // some commands..   -- 
   void checkFlags();              // check the boolean flags to see if we need to update the user with something.. 

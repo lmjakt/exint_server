@@ -54,6 +54,7 @@
 #include <vector>
 #include <set>
 #include <map>
+#include <libpq/libpq-fs.h>
 #include <libpq++.h>
 #include <unistd.h>
 #include <crypt.h>
@@ -129,17 +130,8 @@ ConnectionObject::ConnectionObject(QSocketDevice* s, ProbeSetSet2* p, QWidget* s
   for(map<int, chipInfo>::iterator it = pSet->chipDescriptions.begin(); it != pSet->chipDescriptions.end(); it++){
     clientChips.insert((*it).first);   // which is the chip number..
   }
-  //  sendData.resize(0);
-  //sendData.reserve((pSet->data.size() * 4) + 1000);      // should be more data than we need. 
-  //socketNumber = socket->socket();
   stayConnected = true;
-  
-
-  //connect(socket, SIGNAL(readyRead()), this, SLOT(readyRead()));     // read from client.. --- which perhaps could crash,, anyway, we don't really want this, so let's remove.
-  ////////
-  //connect(socket, SIGNAL(delayedCloseFinished()), this, SLOT(sendDeleteMe()) );
   QThread::start();
-  cout << "end of Connection Object Constructor socket number: " << socketNumber << endl;
 }
 
 void ConnectionObject::run(){
@@ -161,9 +153,6 @@ ConnectionObject::~ConnectionObject(){
   cout << "delete thingy sent.. " << endl;
   delete sendData;
   delete inData;
-  //socket->flush();  DON'T FLUSH, DON'T CLOSE AS THIS MAY FORCE THE PROGRAM TO WRITE ON A CLOSED SOCKET,
-  //socket->close();  GIVING RISE TO A BROKEN PIPE AND A PROGRAM CRASH.. 
-  //delete socket;
 }
 
 void ConnectionObject::checkFlags(){
@@ -225,13 +214,6 @@ vector<QString> ConnectionObject::splitString(QString& word, char delimiter){
   return(words);
 }
 
-//void ConnectionObject::readyRead(){
-  // don't read, just enter the thread..
-  //cout << "received input from socket: " << socketNumber << endl;
-  //dataWait.wakeOne();
-  //  readClient();
-//}
-
 void ConnectionObject::readClient(){
   //  cout << "at the top of readClient" << endl;
   if(!authenticated && !authenticate()){
@@ -247,12 +229,7 @@ void ConnectionObject::readClient(){
   char c;
   int numberRead;  
   // don't read in one byte at a time from the socket as this is supposed to be slow, but rather read into the inData structure
-  // and then parse from this..
-  //alarm(2);      // set the alarm,, 
   while( (numberRead = inData->appendFromSocket(socketNumber, inData->capacity())) > 0 ){    // returns 0 if connection closed.. 
-    //alarm(0);   // cancel the alarm.. 
-    //cout << "just after numberRead sorted out,, numberRead is now : " << numberRead << endl;
-    //cout << "and size of inData is now : " << inData->size() << endl;
     while(inData->hasMoreData()){          // just can I read one more char from this..
       c = *inData->readChar();
       switch(commandState){
@@ -652,14 +629,6 @@ void ConnectionObject::parseCommand(){
     return;
   }
   if(lastCommand == QString("Received")){
-    //int id = lastMessage.toInt();
-    //map<int, vector<QByteArray> >::iterator it;
-    //it = clientRequests.find(id);
-    //if(it != clientRequests.end()){
-      //      QByteArray* tArray = &(*it).second;
-      //clientRequests.erase(id);
-      //delete tArray;
-    //}
     cout << "Got a received command" << endl;
     return;
   }
@@ -692,9 +661,6 @@ void ConnectionObject::sendUserInformation(){
   pSet->userMutex->unlock();
   sApp("<userInformationEnd>");
   writeArray();
-  //  doFlush();
-  //  doFlush();
-  //doFlush();
 }
 
 
@@ -703,9 +669,7 @@ void ConnectionObject::sendProbeSet(){
   // probe_set.cpp file..
   bool ok;
   int regionSize = 200000;         // the amount of genomic region to send to the client .. 
-  //  double maxExpect = 1e-20;        // and the largest random expectation to send..
   vector<QString> words = splitString(lastMessage, '|');
-  //cout << "\tsendProbeSet : words size is " << words.size() << endl;
   if(words.size() < 1){
     cerr << "\tsendProbeSet : words size is smaller than 1 " << endl;
     return;
@@ -716,18 +680,12 @@ void ConnectionObject::sendProbeSet(){
       regionSize = rSize;   // if not ok, just leave it at 200000,, ok.. 
     }
   }
-  //cout << "socket number " << socketNumber << "  SendProbeSet : regionSize is : " << regionSize << endl;
   uint i = words[0].toInt(&ok);
-  //cout << "\t\tSEND PROBE SET INDEX IS : (before decrement) " << i << endl;
   if(ok && i > 0){
     i--;                         // db counts from 1, index counts from 0 
     if(i < pSet->data.size()){
       cout << "\tcalling writeProbeSet i: " << i << endl;
-      //if(pSet->data[i]->index){
       writeProbeSet(pSet->data[i]);
-      //}
-      //cout << "\twriteProbeSet returned" << endl;
-      //pSet->normalised[i].writeDataToQSocket(socket);
     }else{
       cerr << "i is too large no probe Set defined i: " << i << endl;
       return;     
@@ -782,10 +740,6 @@ void ConnectionObject::sendRegion(){
   //cout << "This is Send Region how are you ?"  << endl;
 
   vector<QString> words = splitString(lastMessage, '|');
-  //for(int i=0; i < words.size(); i++){
-  //  cout << words[i] << "\t";
-  //}
-  cout << endl;
   // we need a total of .. 5 words
   if(words.size() != 5){
     cerr << "sendRegion function words size is not 5 but : " << words.size() << endl;
@@ -978,14 +932,78 @@ int ConnectionObject::dbCommand(string cmd){
     PQfinish(conn);
     return(-1);
   }
-  //char* escapedString = new char[cmd.length()*2 + 1]; 
-  //int charsWritten = PQescapeString(escapedString, cmd.c_str(), cmd.length());
-  //PGresult* res = PQexec(conn, escapedString);
   PGresult* res = PQexec(conn, cmd.c_str());
   int cmdTuples = atoi(PQcmdTuples(res));
   PQfinish(conn);
   //delete escapedString;
   return(cmdTuples);
+}
+
+char* ConnectionObject::getLargeObject(int oid, int& length)
+{
+  length = -1;
+  PGconn* conn = PQconnectdb(conninfo);
+  if(PQstatus(conn) != CONNECTION_OK){
+    cerr << "ConnectionObject::getLargeObject database connection failed" << endl;
+    cerr << "Error : " << PQerrorMessage(conn) << endl;
+    PQfinish(conn);
+    return(0);
+  }
+  PGresult* res = PQexec(conn, "BEGIN");
+  if(PQresultStatus(res) != PGRES_COMMAND_OK){
+    cerr << "ConnectionObject::getLargeObject failed to start transaction" << endl;
+    cerr << "Error : " << PQerrorMessage(conn) << endl;
+    PQfinish(conn);
+    return(0);
+  }
+  int lo_fd = lo_open(conn, oid, INV_READ);
+  if(lo_fd < 0){
+    cerr << "ConnectionObject::getLargeObject failed to open large object oid " << oid << " fd: " << lo_fd << endl;
+    cerr << "Error : " << PQerrorMessage(conn) << endl;
+    PQfinish(conn);
+    return(0);
+  }
+  int seekValue = lo_lseek(conn, lo_fd, 0, SEEK_END);
+  if( seekValue < 0){
+    cerr << "ConnectionObject::getLargeObject failed to seek to end" << endl;
+    cerr << "oid: " << oid << "  lo_fd " << lo_fd << "  seekValue : " << seekValue << endl;
+    cerr << "Error : " << PQerrorMessage(conn) << endl;
+    lo_close(conn, lo_fd);
+    PQfinish(conn);
+    return(0);
+  }
+  length = lo_tell(conn, lo_fd);
+  if(length <= 0){
+    cerr << "ConnectionObject::getLargeObject lo_tell returns negative or 0 value" << length << endl;
+    cerr << "oid: " << oid << "  lo_fd " << lo_fd << endl;
+    cerr << "Error : " << PQerrorMessage(conn) << endl;
+    lo_close(conn, lo_fd);
+    PQfinish(conn);
+    return(0);
+  }
+  if( lo_lseek(conn, lo_fd, 0, SEEK_SET) < 0 ){
+    cerr << "ConnectionObject::getLargeObject failed to seek to beginning of object" << endl;
+    cerr << "Error : " << PQerrorMessage(conn) << endl;
+    lo_close(conn, lo_fd);
+    PQfinish(conn);
+    return(0);
+  }
+  char* buf = new char[length];
+  int bytesRead = lo_read(conn, lo_fd, buf, length);
+  if(bytesRead != length){
+    cerr << "ConnectionObject::getLargeObject failed to read complete object read "
+	 << bytesRead << " / " << length << endl;
+    cerr << "Error : " << PQerrorMessage(conn) << endl;
+    length = -1;
+    delete []buf;
+    lo_close(conn, lo_fd);
+    PQfinish(conn);
+    return(0);
+  }
+  lo_close(conn, lo_fd);
+  res = PQexec(conn, "COMMIT");
+  PQfinish(conn);
+  return(buf);
 }
 
 bool ConnectionObject::createSession(){
@@ -1023,7 +1041,7 @@ bool ConnectionObject::createSession(){
   if(conn.Exec("begin work")){ transactionOk = true; }
   if(transactionOk){
     if(conn.Exec(sessionInsert.str().c_str())){ 
-      for(int i=2; i < words.size(); i++){
+      for(uint i=2; i < words.size(); i++){
 	ostringstream keywordInsert;
 	keywordInsert << "insert into session_keywords values (" << sessionId << ", '" << words[i] << "')";
 	if(!conn.Exec(keywordInsert.str().c_str())){ transactionOk = false; }
@@ -1075,7 +1093,7 @@ bool ConnectionObject::newAnnotation(){
   if(!ok) { return(false); }
   vector<int> geneIndices;
   //cout << "words size is " << words.size() << endl;
-  for(int i=2; i < words.size(); i++){
+  for(uint i=2; i < words.size(); i++){
     temp = words[i].toInt(&ok);
     if(ok){
       geneIndices.push_back(temp);
@@ -1109,7 +1127,7 @@ bool ConnectionObject::newAnnotation(){
   set<int> associatedGenes;
   conn.Exec(annotationInsert.str().c_str());
   if(conn.CmdTuples() > 0){
-    for(int i=0; i < geneIndices.size(); i++){
+    for(uint i=0; i < geneIndices.size(); i++){
       ostringstream geneInsert;
       geneInsert << "insert into user_annotation_genes values (" << annoteId << ", " << geneIndices[i] << ")";
       if(!conn.Exec(geneInsert.str().c_str())){ insertOk = false; }
@@ -1130,7 +1148,7 @@ bool ConnectionObject::newAnnotation(){
       //// and more to the point update the various appropriate datastructures.. the lookups and anothers..
       if(sessionId > 0){          // i.e. the comment and the genes are tied to a session,, update sessionLookup.. 
 	pSet->sessionMutex->lock();
-	for(int i=0; i < geneIndices.size(); i++){
+	for(uint i=0; i < geneIndices.size(); i++){
 	  pSet->sessionLookup[geneIndices[i]].insert(sessionId);   // hope this is thread safe.. hmm..
 	}
 	pSet->sessionMutex->unlock();
@@ -1138,7 +1156,7 @@ bool ConnectionObject::newAnnotation(){
       if(words[1].length() > 0){    // i.e. there's actually some desription given in the thingy..
 	pSet->annotationMutex->lock();
 	pSet->userAnnotation.insert(make_pair(annoteId, annotationInformation(annoteId, userId, words[1].latin1(), associatedGenes)));
-	for(int i=0; i < geneIndices.size(); i++){
+	for(uint i=0; i < geneIndices.size(); i++){
 	  pSet->annotationLookup[geneIndices[i]].insert(annoteId);
 	}
 	pSet->annotationMutex->unlock();
@@ -1180,7 +1198,7 @@ bool ConnectionObject::updateSessionInformation(){
     ostringstream delString;
     delString << "delete from session_keywords where index=" << sessionId;
     conn.Exec(delString.str().c_str());
-    for(int i=3; i < words.size(); i++){
+    for(uint i=3; i < words.size(); i++){
       ostringstream insString;
       insString << "insert into session_keywords values (" << sessionId << ", '"
 		<< words[i].latin1() << "')";
@@ -1200,6 +1218,7 @@ bool ConnectionObject::updateSessionInformation(){
   }
   
   cout << "updated. tuples affected : " << conn.CmdTuples() << endl;
+  return(true);
 }
 
 bool ConnectionObject::updateAnnotation(){
@@ -1356,7 +1375,8 @@ void ConnectionObject::setIshProbeName(){
   char* escapedString = new char[words[1].length()*2 + 1]; 
   int charsWritten = PQescapeString(escapedString, words[1].latin1(), words[1].length());
 
-  update << "update in_situ_probes set probe_name = '" << escapedString << "' where probe = " << probeId;
+  update << "update in_situ_probes set probe_name = '" << escapedString << "' where probe = " << probeId
+	 << "  charsWritten (escape string) " << charsWritten << endl;
   // and delete the string
   delete escapedString;
   if(!conn.Exec(update.str().c_str())){
@@ -1388,11 +1408,13 @@ void ConnectionObject::insertIshProbeTextAnnotation(){
     return;
   }
   bool ok1, ok2, ok3;
+  // it seems that we don't actually use id, or the other things below. ?
   int id = words[0].toInt(&ok1);
   int ishProbeId = words[1].toInt(&ok2);
   int fieldNameNew = words[2].toInt(&ok3);
   if(!ok1 || !ok2 || !ok3){
     cerr << "insertIshProbeTextAnnotation, failed to obtain one of the integer paramters" << endl;
+    cout << "id : " << id << " ish_probe_id " << ishProbeId << " : " << fieldNameNew << endl;
     return;
   }
   // first check if we have an appropriate ish probe .. otherwise no point in doing this eh.. 
@@ -1576,6 +1598,7 @@ void ConnectionObject::insertIshProbeFloatAnnotation(){
   float value = words[4].toFloat(&ok4); 
   if(!ok1 || !ok2 || !ok3 || !ok4){
     cerr << "Couldn't get one of the parameters so returning without insertion " << endl;
+    cerr << id << "," << ishProbeId << "," << fieldNameNew << endl;
     return;
   }
   // first check if we have the ish probe, otherwise doesn't make any sense.
@@ -1674,7 +1697,7 @@ void ConnectionObject::insertIshProbeClassification(){
   float value = words[4].toFloat(&ok4); 
   if(!ok1 || !ok2 || !ok3 || !ok4){
     cerr << "Couldn't get one of the parameters so returning without insertion " << endl;
-    //cout << words[0] << ", " << words[1] << ", " << words[2] << ", " << words[3] << ", " << words[4] << endl;
+    cerr << id << "," << ishProbeId << "," << fieldNameNew << endl;
     return;
   }
   map<int, ishProbeData>::iterator it;
@@ -2069,15 +2092,13 @@ void ConnectionObject::sendGenomeSequence(){
     cerr << "sendGenomeSequence : couldn't get a number from the id, what is going on?  " << endl; //  words[3] << endl;
     return;
   }
-  //cout << "send Genome Sequence : chromsome " << words[0] << "   start : " << start << "   end : " << stop << "   id : " << requestId << endl;
-  // make sure both are above 0..
   if(!(start > 0 && stop >= start)){             // the ensembl referencing counts sequence positions from 1, not 0, like we do in the file. 
     cerr << "sendGenomeSequence : not very happy with start and stop numbers try again" << endl
 	 << "           start   : " << start << "\tstop : " << stop << endl;
     return;
   }
   // ok, now everything should be pretty much hunky dory and all that, now we should be able to do more stuff. 
-  if((stop - start) > maxSize){
+  if((stop - start) > (uint)maxSize){
     cerr << "requested range too large, setting stop to : " << start+maxSize << endl;
     stop = start + maxSize;
   }
@@ -2204,7 +2225,7 @@ void ConnectionObject::doDBLookup(){
   // return;
   //}
   int tuples = conn.Tuples();
-  int pIndex;  
+  uint pIndex;  
   pair< multimap<int, int>::iterator, multimap<int, int>::iterator > range;
   vector<int> index;
   index.reserve(tuples);
@@ -2217,7 +2238,7 @@ void ConnectionObject::doDBLookup(){
     }else{
       range = pSet->ensemblProbeSetIndex.equal_range(pIndex);         // this is probably dangerous. should set up a simpler structure where we can just do a lookup.. 
       for(multimap<int, int>::iterator it=range.first; it != range.second; it++){
-	if((*it).second <= pSet->data.size()){
+	if((uint)(*it).second <= pSet->data.size()){
 	  index.push_back((*it).second);
 	}
       }
@@ -2380,7 +2401,7 @@ void ConnectionObject::writeIndex(vector<int> v, string term, bool setClientInde
   vector<uint> v2(v.size());
   
   for(uint i=0; i < v.size(); i++){
-    if(v[i] > 0 && v[i] <= pSet->data.size() && pSet->data[v[i]-1]->index && clientChips.count(pSet->probeData[v[i]-1].chip)){
+    if(v[i] > 0 && v[i] <= (int)pSet->data.size() && pSet->data[v[i]-1]->index && clientChips.count(pSet->probeData[v[i]-1].chip)){
       tv.push_back(v[i]);
     }
     /////////// WARNING this modification might screw up old functions. But it is clearly incorrect. The internal
@@ -2394,7 +2415,7 @@ void ConnectionObject::writeIndex(vector<int> v, string term, bool setClientInde
     clientIndex = v2;
   }
   qiApp(tv.size());
-  for(int i=0; i < tv.size(); i++){
+  for(uint i=0; i < tv.size(); i++){
     qiApp(tv[i]);
   }
   sApp(term);             // the reason for changing the index.. 
@@ -2458,13 +2479,13 @@ void ConnectionObject::writeProbeSet(probe_set* pset){  /// am ignoring the buff
   sApp(string("<ProbeSet>"));
   qiApp(pset->index);
   qiApp(pset->exptSize);
-  for(int i=0; i < pset->exptSize; i++){
+  for(uint i=0; i < pset->exptSize; i++){
     qiApp(pset->exptIndex[i]);
   }
   qiApp(pset->probeNo);
-  for(int i=0; i < pset->probeNo; i++){
+  for(uint i=0; i < pset->probeNo; i++){
     qiApp(pset->exptSize);
-    for(int j=0; j < pset->exptSize; j++){
+    for(uint j=0; j < pset->exptSize; j++){
       fApp(pset->probes[i][j]);
     }
   }
@@ -2481,19 +2502,6 @@ void ConnectionObject::doFlush(){
 
 void ConnectionObject::writeFileInfo(){            //??????????????????????
 }
-
-// void dIWrite(QDataStream& ds, int n){
-//   ds.writeRawBytes((const char*)&n, 4);
-// }
-
-// void dFWrite(QDataStream& ds, float f){
-//   ds.writeRawBytes((const char*)&f, 4);
-// }
-
-// void dSWrite(QDataStream& ds, string s){
-//   dIWrite(ds, s.size()+1);
-//   ds.writeRawBytes(s.c_str(), s.size()+1);
-// }
 
 void ConnectionObject::writeExptInfo(){
   // serialise the map<float, exinfo> experiments      to a socket
@@ -2558,41 +2566,17 @@ void ConnectionObject::writeArray(){
     //    stayConnected = false;
     return;
   }
-  //socket->writeBlock(sendData->data, sendData->size());
-  //cout << "just after sending the data, and just before trying to flush" << endl;
-  // if(connected()){
-//     cout << "no error returned by qsocket device " << endl;
-//     socket->flush();    // but this is never good ,,, 
-//     cout << "after flushing" << endl;
-//   }else{
-//     stayConnected = false;
-//   }
-  // no flushing implemented on a qsocket device .. 
-  //qApp->unlock();
   sendData->empty();       // just sets the counter back to 0.. the memory is still there. 
-  //cout << "after sendData empty .. " << endl; 
- //cout << "Address of sendData " << (int)sendData << endl;
-  //void (NetArray::*emptyAddress)() = &NetArray::empty;
-  //cout << "Address of sendData empty function " << (int)&(sendData->*emptyAddress) << endl;
-  // the question is if the address of the empty function is the same between different threads
-  // which I suppose we can approach by printing it out.. 
-  // cout << "\tAddress of sendData->empty() function: " << (int)&(sendData->empty) << endl;
-  
 }
     
 ssize_t ConnectionObject::writen(const char* dptr, size_t n){
   size_t nleft = n;
   ssize_t nwritten;
   const char* ptr = dptr;
-  //cout << "writen nleft is :" << nleft << endl;
-  
   while(nleft > 0){
-    //cout << "\tcalling write, nleft is " << nleft << endl;
     if( (nwritten = write(socketNumber, ptr, nleft)) <= 0) {
-      // cout << "some error occured with errno " << errno << endl;
       if( errno == EINTR ){
 	nwritten = 0;
-	//cout << "\t\twriten received an interrupt, socket number is " << socketNumber << endl;
       }else{
 	reportError("writen Received an error. Message :", errno);
 	return(-1);
@@ -2600,8 +2584,6 @@ ssize_t ConnectionObject::writen(const char* dptr, size_t n){
     }
     nleft -= nwritten;
     ptr += nwritten;
-    //cout << "\tnleft    is now : " << nleft << endl
-    //	 << "\tnwritten is now : " << nwritten << endl;
   }
   return(n);
 }
@@ -2627,12 +2609,12 @@ void ConnectionObject::writeStatus(statusMessage message){
   int okInt = (int)message.ok;
   qiApp(okInt);    // anyway, it will go to an int.. 
   qiApp(message.errorMessages.size());
-  for(int i=0; i < message.errorMessages.size(); i++){
+  for(uint i=0; i < message.errorMessages.size(); i++){
     cerr << "error message is : " << message.errorMessages[i] << endl;
     sApp(message.errorMessages[i]);
   }
   qiApp(message.errorCodes.size());
-  for(int i=0; i < message.errorCodes.size(); i++){
+  for(uint i=0; i < message.errorCodes.size(); i++){
     qiApp(message.errorCodes[i]);
   }
   sApp("<StatusMessageEnd>");
@@ -2652,7 +2634,7 @@ void ConnectionObject::writeDBChoices(){
   sApp(string("<DBChoices>"));
   qiApp(1);
   qiApp(dbChoices.size());
-  for(int i=0; i < dbChoices.size(); i++){
+  for(uint i=0; i < dbChoices.size(); i++){
     sApp(dbChoices[i]);
   }
   sApp(string("<DBChoicesEnd>"));
@@ -2664,25 +2646,14 @@ void ConnectionObject::writeDBChoices(){
   sApp(string("<DBChoices>"));
   qiApp(2);
   qiApp(regChoices.size());
-  for(int i=0; i < regChoices.size(); i++){
+  for(uint i=0; i < regChoices.size(); i++){
     sApp(regChoices[i]);
   }
   sApp(string("<DBChoicesEnd>"));
   writeArray();
-  // and maybe that's all that needs be done.. 
-  // maybe this is so small that it doesn't get fed into the system, flush a couple of times..
-  //doFlush();
-  //doFlush();
-  //doFlush();
 }
 
 void ConnectionObject::writeProbeData(probe_data* pdata){
-  //cout << "writing Probe Data to the socket" << endl;
-  // write the probe_data to the socket,,
-  //if(!connected()) { return; }
-  // write everything in the order given in the header file.
-  // header..
-  //sendData.resize(0);
   sApp(string("<ProbeData>"));
   qiApp(pdata->index);
   sApp(pdata->gbid);
@@ -2690,7 +2661,7 @@ void ConnectionObject::writeProbeData(probe_data* pdata){
   qiApp(pdata->blastGuess);
   qiApp(pdata->ugData.size());
   
-  for(int i=0; i < pdata->ugData.size(); i++){
+  for(uint i=0; i < pdata->ugData.size(); i++){
     qiApp(pdata->ugData[i].index);
     sApp(pdata->ugData[i].title);
     sApp(pdata->ugData[i].gene);
@@ -2702,9 +2673,6 @@ void ConnectionObject::writeProbeData(probe_data* pdata){
   map<int, set<int> >::iterator slit=pSet->sessionLookup.find(pdata->index);
   map<int, sessionInformation>::iterator msit;
   if(slit != pSet->sessionLookup.end()){
-    //    cout << "got a session information iterator and am going with it" << endl;
-    //cout << "(*slit).first is " << (*slit).first << endl;
-    //cout  << "Size is " << (*slit).second.size() << endl;
     qiApp((*slit).second.size());
     set<int>::iterator sit;
     for(sit = (*slit).second.begin(); sit != (*slit).second.end(); sit++){
@@ -2755,9 +2723,9 @@ void ConnectionObject::writeProbeData(probe_data* pdata){
   sApp(pdata->afdes);
   sApp(pdata->tigrDescription);
   qiApp(pdata->go.size());
-  for(int i=0; i < pdata->go.size(); i++){
+  for(uint i=0; i < pdata->go.size(); i++){
     qiApp(pdata->go[i].size());
-    for(int j=0; j < pdata->go[i].size(); j++){
+    for(uint j=0; j < pdata->go[i].size(); j++){
       sApp(pdata->go[i][j]);
     }
   }
@@ -2765,13 +2733,6 @@ void ConnectionObject::writeProbeData(probe_data* pdata){
   writeArray();
   //cout << "\tFinished writing probe data to the socket" << endl; 
 }
-
-// bool ConnectionObject::connected(){
-//   if(socket->error() == QSocketDevice::NoError){      // I need to change this somewhere.. 
-//     return(true);
-//   }
-//   return(false);
-// }
 
 // Some statistical stuff::
 
@@ -2807,7 +2768,7 @@ void ConnectionObject::stdDeviation(float* v, uint s, float& mean, float& std, b
   std = 0;
   float xsum = 0;
   float xsquaredSum = 0;
-  for(int i=0; i < s; i++){
+  for(uint i=0; i < s; i++){
     xsum += v[i];
     xsquaredSum += (v[i] * v[i]);
   }
@@ -2826,15 +2787,12 @@ void ConnectionObject::squaredSum(float* v, uint s, float& mean, float& sqsum){
   }
   mean = 0;
   sqsum = 0;
-  for(int i=0; i < s; i++){
+  for(uint i=0; i < s; i++){
     mean += v[i];
     sqsum += (v[i] * v[i]);
   }
-  //  cout << "\t\t\tsqsum : " << sqsum << "\t\tmean : " << mean << endl; 
   sqsum = (sqsum - (mean * mean)/(float)s);
   mean = mean / (float)s;
-  //cout << "\t\t\tsqsum : " << sqsum << "\t\tmean : " << mean << endl; 
-  // and that's it..
 }
 	
 
@@ -2874,14 +2832,14 @@ void ConnectionObject::diffSort(uint up, uint down, bool normalised){
     return;
   }
   vector<dist_set> scores(clientIndex.size());
-  for(int i=0; i < clientIndex.size(); i++){
+  for(uint i=0; i < clientIndex.size(); i++){
     scores[i].index = pSet->data[clientIndex[i]]->index;
     scores[i].value = diff(pSet->data[clientIndex[i]], up, down, normalised);
   }
   //  cout << "got the scores.. " << endl;
   sort(scores.begin(), scores.end(), r_comp_set());     // sort biggest first..
   vector<int> tIndex(scores.size());
-  for(int i=0; i < scores.size(); i++){
+  for(uint i=0; i < scores.size(); i++){
     tIndex[i] = scores[i].index;
   }
   //  cout << "just before calling writeIndex" << endl; 
@@ -2909,7 +2867,7 @@ void ConnectionObject::delProbes(float** p, int ps){
 float ConnectionObject::diff(probe_set* p, uint up, uint down, bool normalised){
   // do a simple comparison,, of the two points.. 
   // returns -1 on error.
-  float score = 0;
+  //float score = 0;
   float error = -1;
   if(p->probeNo < 1){ return(error); }
   if(up > p->allExptNo || down > p->allExptNo) { return(error); }
@@ -2927,21 +2885,12 @@ float ConnectionObject::diff(probe_set* p, uint up, uint down, bool normalised){
   float sum_sq = 0;
   float delta;
   float** probes = copyProbes(p->probes, p->probeNo, p->exptSize);
-  //  float** probes = new float*[p->probeNo];
-  //for(int i=0; i < p->probeNo; i++){
-  // probes[i] = new float[p->exptSize];
-  // for(int j=0; j < p->exptSize; j++){
-  //   probes[i][j] = p->probes[i][j];
-  // }
-  //}   /// hmmmm, there should be a better way of doing that. -- can't I just do *probes ?? 
-
-  //vector< vector<float> > probes = p->probes;
   if(normalised){
-    for(int i=0; i < p->probeNo; i++){
+    for(uint i=0; i < p->probeNo; i++){
       zScore(probes[i], p->exptSize);
     }
   }
-  for(int i=0; i < p->probeNo; i++){
+  for(uint i=0; i < p->probeNo; i++){
     delta = probes[i][up] - probes[i][down];
     mean += delta;
     sq_sum += (delta * delta);
@@ -2969,7 +2918,7 @@ float ConnectionObject::euclidean(float* v1, float* v2, uint s){
   //  return(-1); 
   //}
   if(s < 1){ return(-1);}
-  for(int i=0; i < s; i++){
+  for(uint i=0; i < s; i++){
     distance += ((v1[i]-v2[i]) * (v1[i]-v2[i]));
     //    distance += pow((v1[i]-v2[i]), 2);
   }
@@ -2996,7 +2945,7 @@ float ConnectionObject::anova(probe_set* pset, uint* expts, uint es){
 
   float** probes = copyProbes(pset->probes, pset->probeNo, pset->exptSize);
   //  vector< vector<float> > probes = pset->probes; // then normalise it..
-  for(int i=0; i < pset->probeNo; i++){
+  for(uint i=0; i < pset->probeNo; i++){
     zScore(probes[i], pset->exptSize);           
   }
 
@@ -3011,7 +2960,7 @@ float ConnectionObject::anova(probe_set* pset, uint* expts, uint es){
 
   uint* eindex = new uint[es];
   int selEx = 0;      // the selected experiments.. 
-  for(int i=0; i < es; i++){
+  for(uint i=0; i < es; i++){
     //if(expts[i] < pset->exptSize){   /// but this should surely be allExptNo, not exptSs
     if(expts[i] < pset->allExptNo){
       if(pset->exptLookup[expts[i]] != -1){
@@ -3020,17 +2969,8 @@ float ConnectionObject::anova(probe_set* pset, uint* expts, uint es){
       }
     }
   }
-  //  vector<int> eindex;
-  //eindex.reserve(expts.size());       // may be smaller but cannot be larger..
-  //map<int, int>::iterator it;
-  //for(int i=0; i < expts.size(); i++){
-  //   it = pset->exptLookup.find(expts[i]);
-  //  if(it != pset->exptLookup.end()){
-  //    eindex.push_back((*it).second);
-  //  }
-  //}
     
-  for(int i=0; i < pset->probeNo; i++){
+  for(uint i=0; i < pset->probeNo; i++){
     for(int j=0; j < selEx; j++){
       //cout << "expts : " << expts[j] << "   probes: " << i << endl;
       //      if(expts[j] < probes[i].size()){             // i.e. we are not overstepping ourselves..
@@ -3049,7 +2989,7 @@ float ConnectionObject::anova(probe_set* pset, uint* expts, uint es){
   float* exp_means = new float[selEx];
   for(int i=0; i < selEx; i++){
     exp_means[i] = 0;
-    for(int j=0; j < pset->probeNo; j++){
+    for(uint j=0; j < pset->probeNo; j++){
       exp_means[i] += probes[j][eindex[i]];
     }
     //    exp_means[i] = exp_means[i]/probes.size();
@@ -3061,7 +3001,7 @@ float ConnectionObject::anova(probe_set* pset, uint* expts, uint es){
   float var = 0;
   for(int i=0; i < selEx; i++){
     er_variance = 0;
-    for(int j=0; j < pset->probeNo; j++){
+    for(uint j=0; j < pset->probeNo; j++){
       var += ((probes[j][eindex[i]]-exp_means[i]) * (probes[j][eindex[i]]-exp_means[i]));
       //      var += pow((probes[j][eindex[i]]-exp_means[i]), 2);
     }
@@ -3108,7 +3048,7 @@ void ConnectionObject::anovaSelectSort(){
   }
   if(expts.size() == 0){ return; }
   uint* exptArray = new uint[expts.size()]; // ugly
-  for(int i=0; i < expts.size(); i++) { exptArray[i] = expts[i]; } // should be a better way, but I don't know it.
+  for(uint i=0; i < expts.size(); i++) { exptArray[i] = expts[i]; } // should be a better way, but I don't know it.
   // lets make a couple of AnovaProcessors..
   vector<dist_set> scores(clientIndex.size());
   //////////////////// REMEMBER .. clientIndex has already had 1 subtracted to make sure that
@@ -3130,7 +3070,7 @@ void ConnectionObject::anovaSelectSort(){
   sort(scores.begin(), scores.end(), r_comp_set());
   vector<int> tIndex;
   //  tIndex.reserve(scores.size());
-  for(int i=0; i < scores.size(); i++){
+  for(uint i=0; i < scores.size(); i++){
     if(scores[i].value > 0){
       tIndex.push_back(scores[i].index);
     }
@@ -3187,7 +3127,7 @@ void ConnectionObject::doKCluster(){
   bool meanNorm = (bool)b;
   uint N = words.size()-4;
   uint* expts = new uint[words.size()-4];
-  for(int i=4; i < words.size(); i++){
+  for(uint i=4; i < words.size(); i++){
     e = words[i].toInt(&ok);
     if(!ok){
       delete []expts;
@@ -3199,7 +3139,7 @@ void ConnectionObject::doKCluster(){
   cout << " N is " << N << endl;
   // send an int* for the client index instead..
   uint* clientI = new uint[clientIndex.size()];
-  for(int i=0; i < clientIndex.size(); i++){ clientI[i] = clientIndex[i]; }
+  for(uint i=0; i < clientIndex.size(); i++){ clientI[i] = clientIndex[i]; }
   
   // and now just make the cluster with the stuff in it.. 
   KClusterProcess* cluster = new KClusterProcess(k, clientI, clientIndex.size(), &pSet->data, expts, N, localNorm, &clusterProcesses, &clusterMutex);
@@ -3228,7 +3168,7 @@ void ConnectionObject::sendKClusters(){
     qiApp((int)tempP->localNorm);
     // first send the number of experiments...
     qiApp(tempP->N);
-    for(int i=0; i < tempP->N; i++){
+    for(uint i=0; i < tempP->N; i++){
       qiApp(tempP->selectedExperiments[i]);
     }
     // then the number of clusters
@@ -3236,14 +3176,14 @@ void ConnectionObject::sendKClusters(){
     // and the cluster centers, and the members. 
     for(int i=0; i < tempP->k; i++){
       // first the center
-      for(int j=0; j < tempP->N; j++){
+      for(uint j=0; j < tempP->N; j++){
 	fApp(tempP->centers[i][j]);
       }
       // then the number of cluster members..
       qiApp(tempP->clusterSizes[i]);
-      for(int j=0; j < tempP->clusterSizes[i]; j++){
+      for(uint j=0; j < tempP->clusterSizes[i]; j++){
 	qiApp(tempP->probeIndices[tempP->clusters[i][j]]);      // the index of the member
-	for(int k=0; k < tempP->N; k++){
+	for(uint k=0; k < tempP->N; k++){
 	  fApp(tempP->points[tempP->clusters[i][j]][k]);
 	}
       }
@@ -3255,46 +3195,6 @@ void ConnectionObject::sendKClusters(){
     delete tempP;
   }
   clusterMutex.unlock();
-      
-  //  clusterMutex.lock();
-  //while(clusterSets.size()){
-  //  clusterSets.erase(clusterSets.begin());
-  //}
-  //clusterMutex.unlock();
-//   set<KClusterProcess*>::iterator cpit;
-//   // and 
-//   set<clusterSet*> tempClusters;
-//   set<KClusterProcess*> tempProcs;
-//   clusterMutex.lock();    // 
-//   for(csit = clusterSets.begin(); csit != clusterSets.end(); csit++){
-//     tempClusters.insert(*csit);
-//     clusterSets.erase(csit);
-//   }
-//   clusterMutex.unlock();
-//   // now. let's see if we can find the cluster processes and delete those..
-//   for(cpit = clusterProcesses.begin(); cpit != clusterProcesses.end(); cpit++){
-//     if(tempClusters.count((*cpit)->clusters)){
-//       tempProcs.insert(*cpit);
-//       clusterProcesses.erase(cpit);
-//     }
-//   }
-//   ///  now we have a potential problem.. but I think it should be ok. It's messy though.
-//   ///  send the data from tempClusters.. and then delete everything.. OK.. 
-//   // if I delete the process does that delete the cluster ?? shouldn't do, but I'm not entirely sure, but we will find out I guess.
-//   // delete the processes..
-//   for(cpit = tempProcs.begin(); cpit != tempProcs.end(); cpit++){
-//     cout << "deleting a process how is it going, crash, crash and burn" << endl;
-//     (*cpit)->wait();
-//     //delete *cpit;
-//     tempProcs.erase(cpit);
-//   }
-//   for(csit = tempClusters.begin(); csit != tempClusters.end(); csit++){
-//     cout << "Sending one cluster how is it looking? " << endl;
-//   }
-//   for(csit = tempClusters.begin(); csit != tempClusters.end(); csit++){
-//     //    delete *csit;
-//     tempClusters.erase(csit);
-//   }
 }
 
 void ConnectionObject::traceExperiments(){
@@ -3361,11 +3261,11 @@ void ConnectionObject::doExperimentCompare(){
   // now make a couple of data structs more useful threaded stuff,, 
   //cout << "just before making data structs for experiments and other things.. " << endl;
   uint* experiments = new uint[expts.size()];
-  for(int i=0; i < expts.size(); i++){
+  for(uint i=0; i < expts.size(); i++){
     experiments[i] = expts[i];
   }
   uint* genes = new uint[clientIndex.size()];
-  for(int i=0; i < clientIndex.size(); i++){
+  for(uint i=0; i < clientIndex.size(); i++){
     genes[i] = clientIndex[i];
   }
   cout << "just before making the processor" << endl;
@@ -3388,9 +3288,9 @@ void ConnectionObject::sendExperimentDistances(){
     sApp("<ExperimentDistances>");
     qiApp(temp->probeCounter);    // number of genes included.. 
     qiApp(temp->exptNo);
-    for(int i=0; i < temp->exptNo; i++){
+    for(uint i=0; i < temp->exptNo; i++){
       qiApp(temp->experiments[i]);
-      for(int j=i+1; j < temp->exptNo; j++){ 
+      for(uint j=i+1; j < temp->exptNo; j++){ 
 	//qiApp(temp->experiments[j]);   // this is sort of redundant we can work out things.. 
 	fApp(temp->distances[i][j]);
       }
@@ -3452,11 +3352,11 @@ void ConnectionObject::doFlatExptCompare(){
   // now make a couple of data structs more useful threaded stuff,, 
   //cout << "just before making data structs for experiments and other things.. " << endl;
   uint* experiments = new uint[expts.size()];
-  for(int i=0; i < expts.size(); i++){
+  for(uint i=0; i < expts.size(); i++){
     experiments[i] = expts[i];
   }
   uint* genes = new uint[clientIndex.size()];
-  for(int i=0; i < clientIndex.size(); i++){
+  for(uint i=0; i < clientIndex.size(); i++){
     genes[i] = clientIndex[i];
   }
   //cout << "just before making the processor" << endl;
@@ -3478,29 +3378,22 @@ float ConnectionObject::doFlatExptCompare(int* a, uint as, int* b, uint bs, floa
   }
   // get the minimum mean value..
   float minMean = 0;    // we know the minimum will be less than 0, so this is OK.
-  for(int i=0; i < vs; i++){
+  for(uint i=0; i < vs; i++){
     if(minMean > v[i]){ minMean = v[i]; }
   }
-  //cout << "\t\tminMean is : " << minMean << endl;
   // then go through the values and calculate the delta value;.
   float aMean = 0;
   float bMean = 0;
-  for(int i=0; i < as; i++){
-    //cout << "\t\t\ta: " << a[i] << "\tvalue :" << v[a[i]] << endl;
+  for(uint i=0; i < as; i++){
     float tv =  (v[a[i]] - minMean);    // a temporary variable to make the next line more readable..
     aMean += (pow(tv/sigma, order))/ (1 + pow(tv/sigma, order));
   }
-  //cout << "\t\tas : " << as << "\taMean : " << aMean << endl;
   aMean = aMean/(float)as;
-  for(int i=0; i < bs; i++){
+  for(uint i=0; i < bs; i++){
     float tv = v[b[i]] - minMean;
-    //cout << "\t\t\tb: " << b[i] << "\tvalue :" << v[b[i]] << endl;
-    //cout << "\t\t\tsigma : " << sigma << "\torder : " << order << "\ttv : " << tv << endl;
     bMean += (pow((tv/sigma), order)/ (1 + pow(tv/sigma, order)));
   }
-  //cout << "\t\tbs : " << bs << "\tbMean : " << bMean << endl;
   bMean = bMean/(float)bs;
-  //cout << "\t\taMean : " << aMean << "\tbMean: " << bMean << endl;
   // and return the difference between bMean and aMean.. -very simple indeed.    --making it absolute.. well, it loses information, but means we don't have to worry about 
   // other stuff. 
   //return(fabs(aMean - bMean));
@@ -3513,59 +3406,48 @@ void ConnectionObject::sendFlatExptDistances(){
   set<void*>::iterator it;
   flatExptCompareMutex.lock();     // the processes must finish first..
   while(flatExptComparers.size()){
-    //cout << "The first comparer being sent.. " << endl;
     it = flatExptComparers.begin();
-    //  for(it = flatExptComparers.begin(); it != flatExptComparers.end(); it++){
     FlatExptCompare* temp = (FlatExptCompare*)(*it);
     temp->wait();  
-    //cout << "wait returned should be OK " << endl;
     sApp("<FlatExperimentDistances>");  
     qiApp(temp->probeCounter);
     fApp(temp->sigma);
     fApp(temp->order);
     qiApp(temp->exptNo);
-    for(int i=0; i < temp->exptNo; i++){
+    for(uint i=0; i < temp->exptNo; i++){
       qiApp(temp->experiments[i]);
-      for(int j=i+1; j < temp->exptNo; j++){ 
-	//qiApp(temp->experiments[j]);   // this is sort of redundant we can work out things.. 
+      for(uint j=i+1; j < temp->exptNo; j++){ 
 	fApp(temp->distances[i][j]);
       }
     }
     sApp("<FlatExperimentDistancesEnd>");
     writeArray();
     flatExptComparers.erase(it);
-    //    cout << "calling delete on the comparer" << endl;
     delete temp;
-    //cout << "delete called on the comparer " << endl;
   }
   flatExptCompareMutex.unlock();
 }
   
 void ConnectionObject::devsFromMean(){
-  //cout << "This is devs From Mean, and we are getting serious.. " << endl;
   vector<QString> words = splitString(lastMessage, '|');
-  // hmm, we just need a set of experiments to do this with, right..
   vector<unsigned int> expts;
   bool ok;
-  //cout << "And words size is " << words.size() << endl;
-  for(int i=0; i < words.size(); i++){
+  for(uint i=0; i < words.size(); i++){
     expts.push_back(words[i].toUInt(&ok));
     if(!ok){
       cerr << "We couldn't get what we were looking for" << endl;
       return;
     }
-    //cout << "Added " << expts.back() << "  to expts " << endl;
   }
-  //  cout << "devs From Mean, and expts. size is : " << expts.size() << endl;
   // because threads don't like vectors..
   unsigned int* e = new unsigned int[expts.size()];
-  for(int i=0; i < expts.size(); i++){ e[i] = expts[i]; }
+  for(uint i=0; i < expts.size(); i++){ e[i] = expts[i]; }
   // and let's make a couple of things
   DataExtractor de;
   ProbeStats ps;   // for calculating the things..
   // and go through evertying .. 
   vector<float> scores;            // this will be huge.. I'm sure..
-  for(int i=0; i < clientIndex.size(); i++){
+  for(uint i=0; i < clientIndex.size(); i++){
     if(clientIndex[i] < pSet->data.size()){
       ExData* exd = de.extract(pSet->data[clientIndex[i]], e, expts.size());
       if(!exd->exptNo){
@@ -3579,7 +3461,7 @@ void ConnectionObject::devsFromMean(){
 	delete exd;
 	continue;
       }
-      for(int j=0; j < exd->probeNo; j++){
+      for(uint j=0; j < exd->probeNo; j++){
 	scores.push_back(v[j]);
       }
       delete []v;
@@ -3593,7 +3475,7 @@ void ConnectionObject::devsFromMean(){
     qiApp(1);
     sApp("P Dev From Mean");
     qiApp(scores.size());
-    for(int i=0; i < scores.size(); i++){
+    for(uint i=0; i < scores.size(); i++){
       qiApp(-1);
       fApp(scores[i]);
     }
@@ -3627,7 +3509,7 @@ void ConnectionObject::exportMeans(){
     cerr << "Export Means : Unknown normalisation method .. " << endl;
     return;
   }
-  for(int i=2; i < words.size(); i++){
+  for(uint i=2; i < words.size(); i++){
     expts.push_back(words[i].toUInt(&ok));
     if(!ok){
       cerr << "Export Means couldn't parse an experiment index. " << endl;
@@ -3637,7 +3519,7 @@ void ConnectionObject::exportMeans(){
   //  cout << "devs From Mean, and expts. size is : " << expts.size() << endl;
   // because threads don't like vectors..
   unsigned int* e = new unsigned int[expts.size()];
-  for(int i=0; i < expts.size(); i++){ e[i] = expts[i]; }
+  for(uint i=0; i < expts.size(); i++){ e[i] = expts[i]; }
   // and let's make a couple of things
   DataExtractor de;
   Normaliser norm;     // for normalisation.. 
@@ -3649,11 +3531,11 @@ void ConnectionObject::exportMeans(){
   // and refuse to write to anywhere else.
   ostringstream header;
   header << "probe_index";
-  for(int i=0; i < expts.size(); i++){
+  for(uint i=0; i < expts.size(); i++){
     header << "\t" << expts[i];
   }
   sApp(header.str());
-  for(int i=0; i < clientIndex.size(); i++){
+  for(uint i=0; i < clientIndex.size(); i++){
     if(clientIndex[i] < pSet->data.size()){
       ExData* exd = de.extract(pSet->data[clientIndex[i]], e, expts.size(), true);
       if(!exd->exptNo){
@@ -3687,7 +3569,7 @@ void ConnectionObject::exportMeans(){
       // make a line.. 
       ostringstream line;
       line << pSet->data[clientIndex[i]]->index;    // make sure that this is indeed the index.
-      for(int j=0; j < exd->exptNo; j++){
+      for(uint j=0; j < exd->exptNo; j++){
 	line << "\t" << meanValues[j];
       }
       // and just write the string..
@@ -3711,7 +3593,7 @@ void ConnectionObject::parseGenomicRegionRequest(){
   bool ensGenes = false;
   // and we can increase the number..
   vector<QString> types = splitString(words[0], ',');    // get the types..
-  for(int i=0; i < types.size(); i++){
+  for(uint i=0; i < types.size(); i++){
     if(types[i] == "ps"){ probeSet = true; }
     if(types[i] == "egene"){ ensGenes = true; }
   }
@@ -3767,7 +3649,7 @@ void ConnectionObject::sendIshThumbnails(){
 	 << conn.ErrorMessage() << endl;
     return;
   }
-  // send the probe data first so that the client can put some appropriate labels on the things.. 
+  // send these probe data first so that the client can put some appropriate labels on the things.. 
   sendIshProbeData(index);     
   for(int i=0; i < conn.Tuples(); i++){
     //cout << "Sending an Image using the sendIshThumbnail function " << endl;
@@ -3783,31 +3665,7 @@ void ConnectionObject::sendIshThumbnails(){
 
 
   // now let's look up the data for this probe and see what genomic regions we can send to the client.. well, you never know, it might look good.. eh..
-  //cout << "Sending the IshImageRegions, but I think there may be lock somewhere that's locked at the moment " << endl;
   sendIshImageRegions(index, regionSize);     // well acutally that's regions, but never mind.. 
- //  map<int, ishProbeData>::iterator it = pSet->ishProbes.find(index);
-//   if(it != pSet->ishProbes.end()){
-//     sApp("<sendingRegions>");
-//     qiApp(2);      // the target
-//     qiApp(index);    // the index
-//     sApp("<sendingRegionsEnd>");
-//     writeArray();
-//     vector<ishProbeMatchSet>::iterator vit;
-//     for(vit =(*it).second.probeMatches.begin(); vit != (*it).second.probeMatches.end(); vit++){
-//       int range = (*vit).maxPos - (*vit).minPos;
-//       int margin = 100;
-//       if(range < regionSize){
-// 	margin = (regionSize - range)/2;
-//       }
-//       sendGenomicRegion((*vit).chromosome, (*vit).minPos-margin, (*vit).maxPos+margin, index, 2);
-//     }
-//     sApp("<finishedSendingRegions>");
-//     qiApp(2);      // the target
-//     qiApp(index);    // the index
-//     sApp("<finishedSendingRegionsEnd>");
-//     writeArray();
-//   }
-  
 }
 
 void ConnectionObject::parseIshProbeRegionRequest(){
@@ -3822,9 +3680,7 @@ void ConnectionObject::parseIshProbeRegionRequest(){
 }
 
 void ConnectionObject::sendIshImageRegions(int index, int regionSize){
-  //cout << "beginning of sendIshImageRegions " << endl;
   pSet->ishProbeDataMutex->lock();
-  //cout << "managed to lock the mutex " << endl;
   map<int, ishProbeData>::iterator it = pSet->ishProbes.find(index);
   if(it != pSet->ishProbes.end()){
     sApp("<sendingRegions>");
@@ -3971,12 +3827,9 @@ void ConnectionObject::sendProtocol(){
   }
   Protocol protocol(conninfo, id, true);
   sApp("<Protocol>");
-  //cout << "calling serialise " << endl;
   protocol.serialise(sendData, true);
-  //cout << "serialise returned : " << endl;
   sApp("<ProtocolEnd>");
   writeArray();
-  //cout << "wrote Array " << endl;
 }
 
 void ConnectionObject::receiveNewProtocol(){
@@ -4004,7 +3857,7 @@ void ConnectionObject::receiveNewProtocol(){
     return;
   }
   int wc = 5;
-  if(words.size() < (5 + (4 * stepNo)) ){
+  if(words.size() < (uint)(5 + (4 * stepNo)) ){
     cerr << "receiveNewProtocol words size is too small need at least : " << (4 + (4 * stepNo)) << "  for " << stepNo <<  "  steps. Have only : " << words.size() << endl;
     return;
   }
@@ -4229,7 +4082,7 @@ void ConnectionObject::commitIshImageToDB(){
     return;
   }
   //// words size should be, 7 + commentNo * 2, check that this is correct.. 
-  if(words.size() != (8 + commentNo*2)){
+  if(words.size() != (uint)(8 + commentNo*2)){
     cerr << "ish image data comments, comment No is " << commentNo << "  so words size should be " << (8 + commentNo*2) << "  but in fact is " << words.size() << endl;
     status.ok = false;
     status.errorMessages.push_back("commitIshImageToDB function, wrong word number after getting commentNo");    
@@ -4491,43 +4344,24 @@ void ConnectionObject::appendIshAnnotation(ish_annotation& a){    // no need to 
   
 
 void ConnectionObject::sendIshThumbnail(int index, int imageIndex, int oid){
-  // index is the ish_probe_index,, -- we need to tell the client what this is.. after all.. 
-  PgLargeObject lo(oid, conninfo);
-  if(lo.ConnectionBad()){
-    cerr << "Couldn't connect to large object oid : " << index << endl
-	 << lo.ErrorMessage() << endl;
-  }
-  
-  lo.Exec("BEGIN");    // do I need this ?? I'm not actually sure,, but it may be useful.. 
-  lo.Open();
-  int seekValue = lo.LSeek(0, SEEK_END);
-  int end = lo.Tell();
-  //cout << "After seeking to the end. The seekValue returned is : " << seekValue << "  and the tell value returned is " << end << endl;
-  if(end < 0){
-    cerr << "lo.LSeek returns negative value, return without reading " << endl;
-    lo.Exec("COMMIT");      // maybe unnecessary but seems 
-    lo.Close();              // presumably closes on destruct, but what the hell. 
+  // rewrite to avoid using libpq++
+  // suggest writing a PgConn* connect_db() function that does the below
+  int buf_length = 0;
+  char* buf = getLargeObject(oid, buf_length);
+  if(!buf || buf_length <= 0){
+    cerr << "ConnectionObject::sendIshThumbnail failed to obtain buffer" << endl;
     return;
   }
-  int returnValue = lo.LSeek(0, 0);
-  int begin = lo.Tell();
-  //cout << "After seeking back to the beginning. The value returned by seek is : " << returnValue << "  and tell says " << begin << endl;
-  // length of the buffer should be equal to end.. so let's make a buffer for reading into..
-  char* buf = new char[end];
-  int bytesRead = lo.Read(buf, end);
-  lo.Exec("COMMIT");  // ?? 
-  //cout << "read " << bytesRead << "  bytes into buffer" << endl;
-  // and now let's make a message containing buffer,, and send it.. then delete the buffer or something.
+  // and send.. 
   sApp("<ishThumbNail>");
   qiApp(index);   // the index of the probe..
   qiApp(imageIndex);  // the index of the image,, so we know which one it is.. 
   //qiApp(end);     // the length of the data.. // not needed the sApp function anyway provides a function for this.. 
-  sApp(buf, end);  // just appends the buffer ,, -don't forget to delete it... 
+  sApp(buf, buf_length);  // just appends the buffer ,, -don't forget to delete it... 
   sApp("<ishThumbNailEnd>");
-  delete buf;
-  lo.Close();    // hopefully that is OK.. 
+  delete []buf;
   writeArray();
-  ///
+  return;
 }
 
 void ConnectionObject::sendIshImage(){
@@ -4556,40 +4390,18 @@ void ConnectionObject::sendIshImage(){
   }
   int probeIndex = atoi(conn.GetValue(0, 0));
   int oid = atoi(conn.GetValue(0, 1));
-  // ok.. now we have to make a large object and fill it with stuff..
-  PgLargeObject lo(oid, conninfo);
-  if(lo.ConnectionBad()){
-    cerr << "couldn't connect to large object oid : " << oid << endl
-	 << lo.ErrorMessage() << endl;
-    return;
-  }
-  lo.Exec("BEGIN");
-  lo.Open();
-  int end = lo.LSeek(0, SEEK_END);
-  //cout << "sendIshImage after seeking to end end is : " << end << endl;
-  // and seek back to the beginning..
-  int begin = lo.LSeek(0, 0);
-  if(end < 0){
-    cerr << "lo.LSeek returning negative number  (sendIshImage)" << endl;
-    lo.Exec("COMMIT");
-    lo.Close();
-  }
-  char* buffer = new char[end];
-  int bytesRead = lo.Read(buffer, end);
-  lo.Exec("COMMIT");
-  if(bytesRead != end){
-    cerr << "bytes read is not as requested, perhaps we should get out of here.. " << endl;
-    delete buffer;
-    lo.Close();
+  int buf_length = -1;
+  char* buf = getLargeObject(oid, buf_length);
+  if(!buf || buf_length <= 0){
+    cerr << "ConnectionObject::sendIshImage failed to obtain buffer" << endl;
     return;
   }
   sApp("<ishFullImage>");
   qiApp(probeIndex);
   qiApp(index);
-  sApp(buffer, end);
+  sApp(buf, buf_length);
   sApp("<ishFullImageEnd>");
-  delete buffer;
-  lo.Close();
+  delete []buf;
   writeArray();
 }
 
@@ -4802,7 +4614,7 @@ void ConnectionObject::sendGenomicRegion(string chrom, int start, int stop, int 
   qiApp(annot->chromosomeSize);
   // and then just go through everything and see if it overlaps. This could be speeded up by only running the overlap functions
   // on the last go, but for now, keep the code simple..
-  for(int i=sRegion; i <= eRegion; i++){
+  for(uint i=sRegion; i <= eRegion; i++){
     for(int j=0; j < annot->regions[i]->ensGeneNo; j++){
       ensemblGene* gene = annot->regions[i]->ensGenes[j];
       // check to see if we've covered this one already..
@@ -4861,8 +4673,8 @@ void ConnectionObject::sendGenomicRegion(string chrom, int start, int stop, int 
 
   // Send other types of transcripts. These will be identified by some sort of string -- but basically these are not definite transcripts..
   // but blast matches to some sort of transcript. We will work out some way of looking at them later.. Ok..
-  for(int i=sRegion; i <= eRegion; i++){
-    for(int j=0; j < annot->regions[i]->transcriptNo; j++){
+  for(uint i=sRegion; i <= eRegion; i++){
+    for(uint j=0; j < annot->regions[i]->transcriptNo; j++){
       Transcript* trans = annot->regions[i]->transcripts[j];
       if(i > sRegion && trans->start < annot->regions[i]->start){   // we should have sent this already..
 	continue;
@@ -4880,7 +4692,7 @@ void ConnectionObject::sendGenomicRegion(string chrom, int start, int stop, int 
 	qiApp(trans->length);   // the length of the transcript.. -which may not be fully covered by the alignments..
 	// and then the number of exons..
 	qiApp(trans->exonNo);
-	for(int k=0; k < trans->exonNo; k++){
+	for(uint k=0; k < trans->exonNo; k++){
 	  qiApp(trans->exons[k]->start);
 	  qiApp(trans->exons[k]->stop);
 	  qiApp(trans->exons[k]->tbegin);
@@ -4898,7 +4710,7 @@ void ConnectionObject::sendGenomicRegion(string chrom, int start, int stop, int 
   //  double maxExpectation = 1e-6;
   //cout << "\t\t\tprobe set matches " << endl;
   set<int> alreadyDone;    // so we don't include the same probe set more than once in the vector psets.. 
-  for(int i=sRegion; i <= eRegion; i++){
+  for(uint i=sRegion; i <= eRegion; i++){
     for(int j=0; j < annot->regions[i]->pMatchNo; j++){
       probeSetMatch* match = annot->regions[i]->pMatches[j];
       //cout << "trying to send a probe set match, cStart is " << match->cStart << endl
@@ -4938,7 +4750,7 @@ void ConnectionObject::sendGenomicRegion(string chrom, int start, int stop, int 
   /// and finallly let's send any in_situ_probe_blast matches if there are any.. pretty much the same idea...
   /// really should sort this out sometime..
   //cout << "\t\t\tishMatches : " << endl;
-  for(int i=sRegion; i <= eRegion; i++){
+  for(uint i=sRegion; i <= eRegion; i++){
     for(int j=0; j < annot->regions[i]->ishMatchNo; j++){
       qiApp(1);
       ishProbeMatchSet* match = annot->regions[i]->ishMatches[j];
@@ -5003,7 +4815,7 @@ void ConnectionObject::anovaSort(){
   //cout << "\tscores sorted " << endl;
   vector<int> tIndex;
   //  tIndex.reserve(scores.size());
-  for(int i=0; i < scores.size(); i++){
+  for(uint i=0; i < scores.size(); i++){
     if(scores[i].value > 0){
       tIndex.push_back(scores[i].index);
     }
@@ -5027,12 +4839,6 @@ void ConnectionObject::euclidSort(probe_set* pset1, vector<uint> expts){
   // find the midpoint and make a couple of euclidSortProcessors!!
   uint mid = pSet->data.size()/2;
 
-//   cout << "Creating euclid sort processors for experiments : ";
-//   for(uint i=0; i < expts.size(); i++){
-//     cout << "\t" << expts[i] << endl;
-//   }
-//   cout << endl;
-
   EuclidSortProcessor* proc1 = new EuclidSortProcessor(pSet, pset1, 0, mid, &distances, clientChips, expts);
   EuclidSortProcessor* proc2 = new EuclidSortProcessor(pSet, pset1, mid, pSet->data.size(), &distances, clientChips, expts);
   
@@ -5040,27 +4846,9 @@ void ConnectionObject::euclidSort(probe_set* pset1, vector<uint> expts){
   proc2->start();
   proc1->wait();
   proc2->wait();
-  //cout << "initialised distances " << endl;
-  //probe_set probe1 = *pset1;
-  //probe_set probe2;
-  //  int size = pSet->data.size();
-  //QMutex tLock;
-  //qApp->lock();
-  //tLock.lock();
-  //for(int i=0; i < size; i++){
-    //    probe2 = pSet->data[i];
-    //tLock.unlock();
-    //distances[i].index = pSet->data[i]->index;
-    //distances[i].index = probe2.index;
-    //distances[i].value = heavyCompare(&probe1, &probe2, pset1->exptIndex);
-    //distances[i].value = heavyCompare(pset1, pSet->data[i], pset1->exptIndex, pset1->exptSize);
-  //}
-  //tLock.unlock();
-  //qApp->unlock();
-  //cout << "just before sorting the distances" << endl;
   sort(distances.begin(), distances.end(), comp_set());
   vector<int> tIndex;
-  for(int i=0; i < distances.size(); i++){
+  for(uint i=0; i < distances.size(); i++){
     if(distances[i].value > 0){
       tIndex.push_back(distances[i].index);
     }
@@ -5093,38 +4881,25 @@ float ConnectionObject::heavyCompare(probe_set* pset1, probe_set* pset2, uint* e
   float** v1 = new float*[pset1->probeNo];  
   float** v2 = new float*[pset2->probeNo];
   // and reserve enough memory for each one..
-  for(int i=0; i < pset1->probeNo; i++){ v1[i] = new float[es]; }
-  for(int i=0; i < pset2->probeNo; i++){ v2[i] = new float[es]; }
+  for(uint i=0; i < pset1->probeNo; i++){ v1[i] = new float[es]; }
+  for(uint i=0; i < pset2->probeNo; i++){ v2[i] = new float[es]; }
   int selEx = 0; 
 
 
   //map<int, int>::iterator it1, it2;
-  for(int i=0; i < es; i++){
+  for(uint i=0; i < es; i++){
     if(expts[i] < pset1->allExptNo){           // allExptNo should be the same for both !!
       if(pset1->exptLookup[expts[i]] != -1 && pset2->exptLookup[expts[i]] != -1){
-	for(int j=0; j < pset1->probeNo; j++){
+	for(uint j=0; j < pset1->probeNo; j++){
 	  v1[j][selEx] = pset1->probes[j][pset1->exptLookup[expts[i]]];
 	}
-	for(int j=0; j < pset2->probeNo; j++){
+	for(uint j=0; j < pset2->probeNo; j++){
 	  v2[j][selEx] = pset2->probes[j][pset2->exptLookup[expts[i]]];
 	}
 	selEx++;
       }
     }
   }
-//     it1 = pset1->exptLookup.find(expts[i]);
-//     it2 = pset2->exptLookup.find(expts[i]);
-//     if(it1 != pset1->exptLookup.end() && it2 != pset2->exptLookup.end()){
-//       //  index1.push_back((*it1).second);
-//       //index2.push_back((*it2).first);
-//       for(int j=0; j < pset1->probes.size(); j++){
-// 	v1[j].push_back(pset1->probes[j][(*it1).second]);
-//       }
-//       for(int j=0; j < pset2->probes.size(); j++){
-// 	v2[j].push_back(pset2->probes[j][(*it2).second]);
-//       }
-//     }
-//   }
 
   // AND now just do an all against all comparison, and take the mean value of the comparisons.. 
   float distance = 0;
@@ -5158,25 +4933,18 @@ float ConnectionObject::meanEuclidCompare(probe_set* p, float* target, uint* exp
   //  vector<float> meanValues(expts.size(), 0);     // will puke if it doesn't have the right sizes..
 
   float** tempValues = copyProbes(p->probes, p->probeNo, p->exptSize);
-  //  vector< vector<float> > tempValues;            // actually need this as we may want to normalise.. 
-  //map<int, int>::iterator it;
-  //for(int i=0; i < meanValues.size(); i++){
-  //  cout << "\t\tInitial value of meanValues : " << i << "\t" << meanValues[i] << endl;
-  //}
-  //// Just Checking, I'm not sure if the constructor is correct!! 
-  //tempValues = p->probes;
-  
+
   if(normed){
-    for(int i=0; i < p->probeNo; i++){
+    for(uint i=0; i < p->probeNo; i++){
       zScore(tempValues[i], p->exptSize);
       //      zScore(tempValues[i], p->probeNo);
     }
   }
   
-  for(int i=0; i < es; i++){
+  for(uint i=0; i < es; i++){
     if(expts[i] < p->allExptNo){
       if(p->exptLookup[expts[i]] != -1){
-	for(int j=0; j < p->probeNo; j++){
+	for(uint j=0; j < p->probeNo; j++){
 	  meanValues[i] += tempValues[j][ p->exptLookup[expts[i]] ];
 	  //	  meanValues[i] += p->probes[j][ p->exptLookup[expts[i]] ];
 	}
@@ -5191,14 +4959,7 @@ float ConnectionObject::meanEuclidCompare(probe_set* p, float* target, uint* exp
       return(-1);
     }
   }
-  //  it = p->exptLookup.find(expts[i]);
-  //  if(it == p->exptLookup.end()){
-  //    return(-1);
-  //  }
-  //  for(int j=0; j < p->probes.size(); j++){
-  //    meanValues[i] += tempValues[j][(*it).second];
-  //  }
-  //}
+
   //// hmm, really I should divide by the meanValues, --but because in the long run we are going to normalise 
   //// them anyway, there isn't actually any point.. 
   //// Assume that the target is already normalised, and that just run the euclidean function...
@@ -5219,7 +4980,7 @@ float ConnectionObject::singleEuclidCompare(probe_set* pset1, float* target, uin
     return(-1); 
   }
   float** v1 = new float*[pset1->probeNo];
-  for(int i=0; i < pset1->probeNo; i++){ v1[i] = new float[es]; }
+  for(uint i=0; i < pset1->probeNo; i++){ v1[i] = new float[es]; }
 
   //  vector< vector<float> > v1(pset1->probes.size());   // for keeping normalised values in.
   //vector<float> v2;                                  // for keeping the target values that correspond to the expt. 
@@ -5235,7 +4996,7 @@ float ConnectionObject::singleEuclidCompare(probe_set* pset1, float* target, uin
 
   //map<int, int>::iterator it;
   //cout << "probe index : " << pset1->index << endl;
-  for(int i=0; i < es; i++){
+  for(uint i=0; i < es; i++){
     //it = pset1->exptLookup.find(expts[i]);
     if(expts[i] >= pset1->allExptNo){
       //cout << "experiment index is larger than the exptMap " << endl
@@ -5249,28 +5010,19 @@ float ConnectionObject::singleEuclidCompare(probe_set* pset1, float* target, uin
       delProbes(v1, pset1->probeNo);
       return(-1);
     }
-    //
-    //if(it == pset1->exptLookup.end()){
-    //  cout << "BY BY baby, I'm ignoring you because you don't have the answers I'm looking for" << endl;
-    //  return(-1);
-    //}
-    for(int j=0; j < pset1->probeNo; j++){
+
+    for(uint j=0; j < pset1->probeNo; j++){
       v1[j][i] = pset1->probes[j][pset1->exptLookup[expts[i]]];
-      //      v1[j].push_back(pset1->probes[j][(*it).second]);
     }
   }
   // NORMALISE and get the distances..
   float distance = 0;
-  //if(v1.size() < 1) { return(-1); }
-  for(int i=0; i < pset1->probeNo; i++) { 
-    //cout << "doint the z-score " << endl;
+  for(uint i=0; i < pset1->probeNo; i++) { 
     zScore(v1[i], es); 
-    //cout << "calling for some distance " << endl;
     distance += euclidean(target, v1[i], es);
   }
   // and go through and get the actual distance..
   delProbes(v1, pset1->probeNo);
-  //cout << "Total distance is " << distance << endl;
   return(distance/pset1->probeNo);
 }
 
@@ -5340,7 +5092,6 @@ void ConnectionObject::doCreateNewUser(){
     string lName;
     pSet->userMutex->lock();
     pSet->userTable.insert(make_pair(index, userInformation(index, uName, fName, lName)));
-    //map<int, userInformation>::iterator it = pSet->userTable.find(index); // ok.. --- I don't user this after all.. 
     pSet->userMutex->unlock();
     QCustomEvent* updateUsers = new QCustomEvent(1001);     // user is 1000.. 
     QThread::postEvent(server, updateUsers);
@@ -5368,7 +5119,6 @@ void ConnectionObject::doChangePassword(){
   end = lastMessage.find(":", start);
   while(end > 0){
     QString numstring = lastMessage.mid(start, end-start);
-    //cout << "numstring is " << numstring << endl;
     numbers.push_back(numstring.toInt(&ok));  // hmm 
     start = end+1;
     end = lastMessage.find(":", start);
@@ -5434,7 +5184,7 @@ void ConnectionObject::meanComparisonSort(){
     cerr << "meanComparisonSort , words size doesn't make any sense: " << endl;
     return;
   }
-  for(int i=0; i < (words.size()-2); i += 2){
+  for(int i=0; i < ((int)words.size()-2); i += 2){
     v = words[i].toFloat(&v_ok);
     ei = words[i+1].toInt(&i_ok);
     if(v_ok && i_ok){
@@ -5445,29 +5195,7 @@ void ConnectionObject::meanComparisonSort(){
   QString normString = words[words.size()-2];
   int normInt = normString.toInt(&i_ok);
   bool distribution = (words[words.size()-1] != "0");
-  //cout << "Do mean comparison sort, and the user is looking for a distribution " << distribution << endl;
-//   int start = 0; 
-//   int end = lastMessage.find(":", start);
-//   while(end != -1 && end != 0){
-//     QString vs = lastMessage.mid(start, (end-start));
-//     start = end+1;
-//     end = lastMessage.find(":", start);
-//     QString is = lastMessage.mid(start, (end-start));
-//     v = vs.toFloat(&v_ok);
-//     i = is.toInt(&i_ok);
-//     if(v_ok && i_ok){
-//       values.push_back(v);
-//       eIndex.push_back(i);
-//     }
-//     start = end +1;
-//     end = lastMessage.find(":", start);
-//   }
-//   QString normString = lastMessage.right(1); 
-  //cout << endl << "normString:\t" << normString << "\tnormInt: " << normInt << endl;
-  //cout << "In the mean comparison sort function, last Message : " << lastMessage << "\ti_ok\t" << i_ok << endl;
-  //for(int i=0; i < values.size(); i++){
-    //cout << eIndex[i] << "\t: " << values[i] << endl;
-  //}
+
   if(i_ok){
     if(normInt < 0 || normInt > 1){
       return;
@@ -5484,12 +5212,12 @@ void ConnectionObject::meanComparisonSort(){
   float d;
   float* target = new float[values.size()];
   uint* expts = new uint[eIndex.size()];
-  for(int i=0; i < values.size(); i++){ 
+  for(uint i=0; i < values.size(); i++){ 
     expts[i] = eIndex[i];
     target[i] = values[i]; 
   }
   //cout << "normalisation is " << (bool)normInt << endl;
-  for(int i=0; i < clientIndex.size(); i++){
+  for(uint i=0; i < clientIndex.size(); i++){
     if(clientIndex[i] < pSet->data.size()){
       d = meanEuclidCompare(pSet->data[clientIndex[i]],  target, expts, eIndex.size(), (bool)normInt);
       //      d = meanEuclidCompare(&pSet->data[clientIndex[i]],  values, eIndex, (bool)normInt);
@@ -5501,7 +5229,7 @@ void ConnectionObject::meanComparisonSort(){
   // and if we actually get something after all of that,, we have to check it out..
   sort(distances.begin(), distances.end(), comp_set());
   vector<int> tIndex(distances.size());
-  for(int i=0; i < tIndex.size(); i++){
+  for(uint i=0; i < tIndex.size(); i++){
     tIndex[i] = distances[i].index;
   }
   writeIndex(tIndex, "Mean Profile Sort");
@@ -5511,7 +5239,7 @@ void ConnectionObject::meanComparisonSort(){
     qiApp(1);
     sApp("Mean E Distance");
     qiApp(distances.size());
-    for(int i=0; i < distances.size(); i++){
+    for(uint i=0; i < distances.size(); i++){
       qiApp(distances[i].index-1);
       fApp(distances[i].value);
     }
@@ -5565,7 +5293,7 @@ float ConnectionObject::variationCoefficient(probe_set* pset, uint* expts, uint 
   // find the mean of the above and calcuate the appropriate values..
   float* meanV = new float[exptNo];
   for(int i=0; i < exptNo; i++){ meanV[i] = 0; };
-  for(int i=0; i < ed->probeNo; i++){
+  for(uint i=0; i < ed->probeNo; i++){
     for(int j=0; j < exptNo; j++){
       meanV[j] += (ed->values[i][j]/((float)ed->probeNo));
     }
@@ -5595,75 +5323,8 @@ float ConnectionObject::variationCoefficient(probe_set* pset, uint* expts, uint 
     return(-std/mean_mean);
   }
 
-//   uint* eI = new uint[es];
-//   int selEx = 0;
-  
-//   //vector<int> eI;       // for the local indices..
-//   float meanCoefficient = 0;        // so we can just return this if something goes wrong.. 
-//   //map<int, int>::iterator it;
-//   for(int i=0; i < es; i++){
-//     if(expts[i] < pset->allExptNo){
-//       if(pset->exptLookup[expts[i]] != -1){
-// 	eI[selEx] = pset->exptLookup[expts[i]];
-// 	selEx++;
-//       }
-//     }
-//   }
-//   // it = pset->exptLookup.find(expts[i]);
-//   //  if(it != pset->exptLookup.end()){
-//   //    eI.push_back((*it).second);
-//   //  }
-//   //}
-//   if(selEx < 2){         // then it doesn't make any sense,, and we can't calculate any of these..
-//     return(meanCoefficient);
-//   }
-//   // and then just go throught the different things and calculate
-//   int counter = 0;
-//   float mean_mean = 0;
-//   float mean_std = 0;
-//   for(int i=0; i < pset->probeNo; i++){
-//     float mean = 0; 
-//     float std = 0; 
-//     float sum = 0;
-//     float squaredSum = 0;     // a bit much, but what the hell
-//     for(int j=0; j < selEx; j++){
-//       sum += pset->probes[i][eI[j]];
-//       squaredSum += (pset->probes[i][eI[j]] * pset->probes[i][eI[j]]);
-//     }
-//     mean = sum / (float)selEx;
-//     float SS = squaredSum - (sum * sum)/(float)selEx;
-//     std = sqrt(SS/(float)(selEx -1));
-//     mean_mean += mean;
-//     mean_std += std;
-//     // now check if the mean is above 0,,
-//     //if(mean > 0){
-//       //      if(std / mean < 10){
-//       //meanCoefficient += (std/mean);
-//       //counter++;
-// 	//}
-//     //}
-//   }
-//   delete []eI;
-//   //  return(mean_std / (float)pset->probeNo);
-//   if(mean_mean > 0){
-//     return(mean_std/mean_mean);
-//   }else{
-//     if(mean_mean != 0){
-//       return(-mean_std/mean_mean);   // it makes more sense,, but hopefully 
-//     }else{
-//       return(0);
-//     }
-//   }
-//   //   if(counter > 0){
-//   //     delete []eI;
-// //     return(meanCoefficient/counter);
-// //   }
-// //   delete []eI;
-// //   return(0);    // just in case.. !
 }
 	
-	
-
 void ConnectionObject::collectStats(){
   // first get the experimental indices from the lastMessage and then 
   // go through and obtain a range of stats for everything... -hmmmmmm
@@ -5686,7 +5347,7 @@ void ConnectionObject::collectStats(){
     return;
   }
   uint* expts = new uint[eIndex.size()];
-  for(int i=0; i < eIndex.size(); i++){ expts[i] = eIndex[i]; }
+  for(uint i=0; i < eIndex.size(); i++){ expts[i] = eIndex[i]; }
   ///////////// now simply go through the currently selected set of probe sets
   ///////////// and get the anova scores and all the other stuff... who yeahh.
   vector<float> anovaScores;             // the anova scores
@@ -5706,7 +5367,7 @@ void ConnectionObject::collectStats(){
   float minEuclid = 99999;
   float minVariation = 9999;
 
-  for(int i=0; i < clientIndex.size(); i++){
+  for(uint i=0; i < clientIndex.size(); i++){
     if(clientIndex[i] < pSet->data.size() && pSet->data[clientIndex[i]]->index){
       //cout << "Getting stats for index : " << i << endl;
       doneIndices.push_back(clientIndex[i]);      // and then use this for thingy.. 
@@ -5725,11 +5386,11 @@ void ConnectionObject::collectStats(){
   // compiles and then check that I'm using the right functions!!
   sApp(string("<statCollection>"));
   qiApp(statNames.size());
-  for(int i=0; i < statNames.size(); i++){
+  for(uint i=0; i < statNames.size(); i++){
     sApp(statNames[i]);
   }
   qiApp(doneIndices.size());       // so we know how many to read..
-  for(int i=0; i < doneIndices.size(); i++){
+  for(uint i=0; i < doneIndices.size(); i++){
     qiApp(doneIndices[i]);
     if(anovaScores[i] > 0){
       fApp(anovaScores[i]);
@@ -5768,7 +5429,7 @@ void ConnectionObject::compareCellGroups(){
     cerr << "words size : " << words.size() << endl
 	 << "aSize      : " << aSize << endl
 	 << "words are : " << endl;
-    for(int i=0; i < words.size(); i++){
+    for(uint i=0; i < words.size(); i++){
       cerr << words[i] << "  ";
     }
     cerr << endl;
@@ -5791,7 +5452,7 @@ void ConnectionObject::compareCellGroups(){
 	 << "aSize      : " << aSize << endl
 	 << "bSize      : " << bSize << endl
 	 << "words are : " << endl;
-    for(int i=0; i < words.size(); i++){
+    for(uint i=0; i < words.size(); i++){
       cerr << words[i] << "  ";
     }
     cerr << endl;
@@ -5828,7 +5489,7 @@ void ConnectionObject::compareCellGroups(){
   bCorrelates.reserve(clientIndex.size());
   flatDistances.reserve(clientIndex.size());
   cout << "Created the correlates vector " << endl;
-  for(int i=0; i < clientIndex.size(); i++){
+  for(uint i=0; i < clientIndex.size(); i++){
     //cout << "client Index " << i << "   " << clientIndex[i] << endl;
     //correlates[i] = 0;        // the default, then increment from here..
     // first we have to work out which indices we are going to use.. 
@@ -5836,7 +5497,7 @@ void ConnectionObject::compareCellGroups(){
     int bUsed = 0;
     probe_set* probe = pSet->data[clientIndex[i]];     // this is much easier to read.. 
     //cout << " a : ";
-    for(int j = 0; j < a.size(); j++){
+    for(uint j = 0; j < a.size(); j++){
       //cout << a[j] << " -> ";
       if(a[j] < probe->allExptNo){
 	if(probe->exptLookup[a[j]] != -1){
@@ -5847,7 +5508,7 @@ void ConnectionObject::compareCellGroups(){
       }
     }
     //    cout << endl << " b : ";
-    for(int j = 0; j < b.size(); j++){
+    for(uint j = 0; j < b.size(); j++){
       //cout << b[j] << " -> ";
       if(b[j] < probe->allExptNo){
 	if(probe->exptLookup[b[j]] != -1){
@@ -5871,17 +5532,17 @@ void ConnectionObject::compareCellGroups(){
     float* mean = new float[probe->exptSize];
     // set to 0..
     //cout << "made probes and mean : " << endl;
-    for(int j=0; j < probe->exptSize; j++){
+    for(uint j=0; j < probe->exptSize; j++){
       mean[j] = 0;
     }
     //cout << "set the means to 0:L " << endl;
-    for(int j=0; j < probe->probeNo; j++){
+    for(uint j=0; j < probe->probeNo; j++){
       zScore(probes[j], probe->exptSize);
-      for(int k=0; k < probe->exptSize; k++){
+      for(uint k=0; k < probe->exptSize; k++){
 	mean[k] += probes[j][k];
       }
     }
-    for(int j=0; j < probe->exptSize; j++){
+    for(uint j=0; j < probe->exptSize; j++){
       mean[j] = mean[j]/(float)probe->probeNo;    // rather important to make sure I cast it to a float..
     }
     //cout << "Got the mean values will now go and do something else : " << endl; 
@@ -5904,8 +5565,6 @@ void ConnectionObject::compareCellGroups(){
       // only one sample.. -- so rather than dividing by N-1, I will divide by N.
       // the equatione for pooling variance for a and b (as and bs) is ..
       float amean, bmean, asqsum, bsqsum;    // get these assigned by the wonderful thingy..
-      //float* avalues = new float[bUsed];
-      //float* bvalues = new float[aUsed];
       for(int j=0; j < aUsed; j++){ avalues[j] = mean[aIndex[j]]; }
       for(int j=0; j < bUsed; j++){ bvalues[j] = mean[bIndex[j]]; }      // ok, so that's ugly, and stuff, but there you go.. never mind..
       squaredSum(avalues, aUsed, amean, asqsum);
@@ -5930,13 +5589,8 @@ void ConnectionObject::compareCellGroups(){
       bCorrelates.push_back(bdeltaSquared/bSquared);  // hmmm.. maybe interesting.. 
       // and then divide the difference in means by thingies.........
       float tscore = amean-bmean/ ( sqrt( ((asqsum + bsqsum)/(aUsed + bUsed)) * ( (float)1/(float)aUsed + (float)1/(float)bUsed) ));  // which looks pretty ugly, but.. 
-      //      cout << "amean : " << amean << "\t bmean :" << bmean << "\tasqsum : " << asqsum << "\tbsqsum : " << bsqsum << "\t\t T score : " << tscore << endl;
-      // I just want to have a look at some values ..
       float pooledStd = sqrt( (((asqsum * (float)aUsed) + (bsqsum * (float)bUsed))/(aUsed + bUsed)) * ((float)1/(float)aUsed + (float)1/(float)bUsed) );
-//       cout << "amean                         : " << amean << endl;
-//       cout << "bmean                         : " << bmean << endl;
-//       cout << "Pooled Std Deviation          : " << pooledStd << endl;
-//       cout << "std deviation over difference : " << pooledStd / (amean-bmean) << endl;
+
       float ratio = pooledStd / fabs(amean-bmean);
       //// now the tscore is not the ideal score for us. We are rather looking for something that indicates information content, which doesn't do.
       /// hence we will modify it in the future, but for now, let's just return that and see how it behaves. but Since I don't really want 
@@ -5944,32 +5598,20 @@ void ConnectionObject::compareCellGroups(){
       // comp deltas is the mean difference multiplied by the sum of the squares..
       float aSumSquared = 0;
       float bSumSquared = 0;
-      //     cout << "Adding up stuff for things " << endl;
       for(int j=0; j < aUsed; j++){ aSumSquared += (avalues[j]  * avalues[j]); }
-      // cout << "Added up for a, and about to do for b " << endl;
       for(int j=0; j < bUsed; j++){ bSumSquared += (bvalues[j] * bvalues[j]); }
-      //cout << "got the thingy.. " << endl;
-      //compDeltas.push_back((amean-bmean)*(amean-bmean)*(aSumSquared + bSumSquared));    // hmm, should be ok.. 
       compDeltas.push_back((amean-bmean)*(amean-bmean) * (1 - ratio/(1+ratio)) );    // hmm, should be ok.. maybe ... hmm..  
-      //cout << "pushed back compdeltas value : " << (amean-bmean)*(amean-bmean) * (1 - ratio/(1+ratio)) << endl;
       float flatD = doFlatExptCompare(aIndex, aUsed, bIndex, bUsed, mean, probe->exptSize, 3.667, 0.75);
-      cout << "Flat distance i : " << i << "   value : " << flatD << endl;
       flatDistances.push_back(flatD);
-      //   flatDistances.push_back(doFlatExptCompare(aIndex, aUsed, bIndex, bUsed, mean, probe->exptSize, 3.667, 0.75));
       doneIndices.push_back(clientIndex[i]);
-      //cout << "pushed back done indices with client index for i : " << i << endl;
     }
-    //cout << "correlates  is : " << correlates[i] << endl;
     // and make sure to delete probes and mean..
     // this is a bit wasteful, but probably the safest option..
     delete []mean;
-    //cout << "deleted mean" << endl;
-    for(int j=0; j < probe->probeNo; j++){
+    for(uint j=0; j < probe->probeNo; j++){
       delete []probes[j];
     }
-    //cout << "delete probe things" << endl;
     delete []probes;
-    //cout << "deleted probes : " << endl;
   }
   delete []aIndex;
   delete []bIndex;
@@ -5986,7 +5628,7 @@ void ConnectionObject::compareCellGroups(){
   sApp("B internal");
   sApp("Flat delta");
   qiApp(doneIndices.size());
-  for(int i=0; i < doneIndices.size(); i++){
+  for(uint i=0; i < doneIndices.size(); i++){
     qiApp(doneIndices[i]);
     fApp(correlates[i]);
     fApp(deltas[i]);
@@ -6018,7 +5660,7 @@ void ConnectionObject::rawComparisonSort(){
     cerr << "rawComparisonSort , words size doesn't make any sense: " << endl;
     return;
   }
-  for(int i=0; i < words.size()-1; i += 2){
+  for(uint i=0; i < words.size()-1; i += 2){
     v = words[i].toFloat(&v_ok);
     ei = words[i+1].toInt(&i_ok);
     if(v_ok && i_ok){
@@ -6032,23 +5674,7 @@ void ConnectionObject::rawComparisonSort(){
   cout << "values.size is " << values.size() << endl
        << "eIndex size is " << eIndex.size() << endl
        << "and the guy wants the distribution ? " << distribution << endl;
-//   int start = 0; 
-//   int end = lastMessage.find(":", start);
-//   while(end != -1 && end != 0){
-//     QString vs = lastMessage.mid(start, (end-start));
-//     start = end+1;
-//     end = lastMessage.find(":", start);
-//     QString is = lastMessage.mid(start, (end-start));
-//     v = vs.toFloat(&v_ok);
-//     i = is.toInt(&i_ok);
-//     if(v_ok && i_ok){
-//       values.push_back(v);
-//       eIndex.push_back(i);
-//     }
-//     start = end +1;
-//     end = lastMessage.find(":", start);
-//     cout << "rawComparisonSort values size : " << values.size() << endl;
-//   }
+
   ////////// which I suppose could fall over and do bad stuff, but hopefully it will be OK
   /////////  Now to actually work out what is what.. Remembering that we have to look up the experimental
   /////////  indices as we go along..
@@ -6056,7 +5682,7 @@ void ConnectionObject::rawComparisonSort(){
   
   float* va = new float[values.size()];
   uint* e = new uint[eIndex.size()];   // which should be the same..
-  for(int i=0; i < values.size(); i++){
+  for(uint i=0; i < values.size(); i++){
     va[i] = values[i];
     e[i] = eIndex[i];
   }
@@ -6065,10 +5691,9 @@ void ConnectionObject::rawComparisonSort(){
   vector<dist_set> distances;
   distances.reserve(clientIndex.size());
   float d;
-  for(int i=0; i < clientIndex.size(); i++){
+  for(uint i=0; i < clientIndex.size(); i++){
     if(clientIndex[i] < pSet->data.size()){
       d = singleEuclidCompare(pSet->data[clientIndex[i]],  va, e, values.size());
-      //      d = singleEuclidCompare(&pSet->data[clientIndex[i]],  values, eIndex);
       if(d >= 0){
 	distances.push_back(dist_set(pSet->data[clientIndex[i]]->index, d));
       }
@@ -6077,7 +5702,7 @@ void ConnectionObject::rawComparisonSort(){
   // and if we actually get something after all of that,, we have to check it out..
   sort(distances.begin(), distances.end(), comp_set());
   vector<int> tIndex(distances.size());
-  for(int i=0; i < tIndex.size(); i++){
+  for(uint i=0; i < tIndex.size(); i++){
     tIndex[i] = distances[i].index;
   }
   writeIndex(tIndex, "Raw Profile Search");
@@ -6087,7 +5712,7 @@ void ConnectionObject::rawComparisonSort(){
     qiApp(1);
     sApp("E. Distance");
     qiApp(distances.size());
-    for(int i=0; i < distances.size(); i++){
+    for(uint i=0; i < distances.size(); i++){
       qiApp(distances[i].index-1);   // now that is a bit ugly.. hmm 
       fApp(distances[i].value);
     }
@@ -6134,14 +5759,9 @@ void ConnectionObject::sApp(string s){
   //  sendData->app(*(c+i));
   //}
   qiApp(s.size());
-  //  qiApp(s.size()+1);  // may need to make this a Q_UINT32 ,, but lets see for now
-  //cout << "socketNumber << " << socketNumber << "  appending string : " << s << endl;
-  for(int i=0; i < s.size(); i++){
-    //cout << " " << s[i]; // << endl;
+  for(uint i=0; i < s.size(); i++){
     sendData->app(s[i]);
   }
-  //cout << endl << "socketNumber : " << socketNumber << "  appended string done " << endl;
-  //  sendData.push_back('\0');
 }
 
 void ConnectionObject::fApp(float f){
