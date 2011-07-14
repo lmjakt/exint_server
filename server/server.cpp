@@ -42,6 +42,11 @@
 #include <sys/types.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
+#include <sys/socket.h>
+#include <netdb.h>
+#include <linux/tcp.h>
+#include <errno.h>
+#include <string.h>
 
 using namespace std;                   // USE port 8090 for experimental.. 
 
@@ -81,6 +86,27 @@ void Server::newConnection(int socket){
   cout << "New connection received" << endl;
   QSocketDevice* s = new QSocketDevice();
   s->setSocket(socket, QSocketDevice::Stream);
+  int use_keep_alive = 1;
+  if(setsockopt(socket, SOL_SOCKET, SO_KEEPALIVE, &use_keep_alive, sizeof(use_keep_alive))){
+    int errsv = errno;
+    cerr << "Unable to set socket to use keep_alive error: " 
+	 << errsv << " : " << strerror(errsv) << endl;
+    exit(1);
+  }
+  // change the default behaviour to a more aggressive polling
+  struct protoent* pe = getprotobyname("tcp"); // pe->p_proto contains the number
+  
+  int keep_alive_time = 60;
+  int keep_alive_intvl = 60;
+  int keep_alive_probes = 20;
+  if(setsockopt(socket, pe->p_proto, TCP_KEEPIDLE, &keep_alive_time, sizeof(keep_alive_time)))
+    cerr << "Unable to set socket option keep alive time" << endl;
+  if(setsockopt(socket, pe->p_proto, TCP_KEEPINTVL, &keep_alive_intvl, sizeof(keep_alive_intvl)))
+    cerr << "Unable to set socket option keep alive interval" << endl;
+  if(setsockopt(socket, pe->p_proto, TCP_KEEPCNT, &keep_alive_probes, sizeof(keep_alive_probes)))
+    cerr << "Unable to set sockt option keep alive probes" << endl;
+
+  
   connections[s] = new ConnectionObject(s, &pSet, (QWidget*)this);
 
 }
