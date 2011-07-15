@@ -33,11 +33,12 @@
 using namespace std;
 
 
+
 struct probe_set {
   float** probes;
-  uint probeNo;    // the number of probes.
-  uint exptSize;   // the numbers of experiments for this probe set. 
-  
+  uint probeNo;       // the number of probes.
+  uint exptSize;      // the numbers of experiments for this probe set (and the number of values for each probe) 
+  uint exptCapacity;  // capacity of probes and exptIndex.
 
   uint* exptIndex;                 // the experimental indices. should have same number ..
   int* exptLookup;                // all experiments, with the value being the index of the -1 not defined.. 
@@ -47,9 +48,13 @@ struct probe_set {
 
   int index;                        // probe set index -- related to the affymetrix thingy
   probe_set();
+  probe_set(int i, uint allESize);
   probe_set(int i, vector< vector<float> >& p, vector<uint>& eindices, uint allESize);
   ~probe_set();
 };
+
+// allows the extension of the 
+bool addDataTo_probe_set(probe_set* ps, vector<float>& p, uint expt);
 
 struct uniGeneData {
   int index; // the mouse unigene index,, lets assume for now that we are dealing with mouse genes (allows me to use an int)

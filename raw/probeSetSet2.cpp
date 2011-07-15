@@ -80,7 +80,7 @@ ProbeSetSet2::ProbeSetSet2(const char* cinfo, const char* dataTable){
   // initialise the probe_set vector to have an entry for every probe_data entry..
   emptySet = new probe_set();  // ?
   data.resize(probeData.size());
-  for(int i=0; i < probeData.size(); i++){
+  for(uint i=0; i < probeData.size(); i++){
     data[i] = emptySet;   // so we start counting at the same point.. 
   }
   cout << "about to set data .. " << endl;
@@ -117,6 +117,10 @@ vector<int> ProbeSetSet2::expandIndexByGenomeLinkage(vector<uint> ind){
 }
 
 
+// This function changed to make use of the addDataTo_probe_set
+// function implemented in probe_set.h
+// As of writing (2011-07-15) this function has not been tested
+// very thoroughly. But seems to work.
 void ProbeSetSet2::setData(const char* conninfo, const char* tableName){
 
   PgCursor cursor(conninfo, "portal");
@@ -126,38 +130,37 @@ void ProbeSetSet2::setData(const char* conninfo, const char* tableName){
     return;
   }
   ostringstream os;
-  os << "select * from " << tableName << " order by probe, experiment";
+  os << "select * from " << tableName; // << " order by probe, experiment";
 
   const char* query = os.str().c_str(); 
-#ifdef EXPERIMENTAL_SERVER
-  query = "select * from little_data order by probe, experiment";
-  cout << "query should now be set to " << query << endl;
-#endif
   cout << "query for the data base is : " << query << endl;
-  //  if(!cursor.Declare("select * from data order by probe, experiment")){    // should make an if_def here.. 
+
   if(!cursor.Declare(query)){
-    // if(!cursor.Declare("select * from data where probe < 1000 order by probe, experiment")){
     cerr << "Failed to declare data retrieval query" << endl;
     return;
   }
-  int lastIndex =  -1; //atoi(data.GetValue(0, 0));
+  //  int lastIndex =  -1; //atoi(data.GetValue(0, 0));
   int currentIndex;
   vector<float> pm;
   vector<float> mm;
-  vector<uint> exptIndices;        // work it out..!!
-  vector< vector<float> > delta;  // for the difference values.. 
+  //  vector<uint> exptIndices;        // work it out..!!
+  vector<float> delta;  // for the difference values.. 
   string pmString;
   string mmString;
   float exp;
-  data.reserve(40000);
   int counter = 0;
-  while(cursor.Fetch(1000)){
+
+  // data should have a size of probe_data, and each one should contain an empty
+  // data set. probe index should be -1 of the index. So, just use that.. 
+
+  uint fetch_no = 10000;
+  while(cursor.Fetch(fetch_no)){
     if(cursor.Tuples() == 0){
       cerr << "fetched data, but didn't return any tuples, returning with nothing" << endl;
       return;
     }
     cout << "Getting " << cursor.Tuples() <<  " tuples   : " << counter  << endl;
-    counter += 1000;
+    counter += fetch_no;
     for(int i=0; i < cursor.Tuples(); i++){
       currentIndex = atoi(cursor.GetValue(i, 0));
       exp = atof(cursor.GetValue(i, 1));
@@ -165,48 +168,35 @@ void ProbeSetSet2::setData(const char* conninfo, const char* tableName){
       mmString = cursor.GetValue(i, 3);
       pm = splitString(pmString);
       mm = splitString(mmString);
-      if(currentIndex != lastIndex){
-	if(lastIndex != -1){
-	  int indexPos = lastIndex - 1;
-	  if(indexPos < data.size() && probeData[indexPos].index == lastIndex){
-	    data[indexPos] = new probe_set(lastIndex, delta, exptIndices, experiments.size());
-	  }else{
-	    cerr << "no index for probe set " << lastIndex << " don't know why .. " << endl;
-	    cerr << "index pos is : " << indexPos << " probeData[" << indexPos << "].index is " << probeData[indexPos].index << endl; 
-	    exit(1);
-	  }
-	}
-	//	  data.push_back(new probe_set(lastIndex, delta, exptIndices, experiments.size()));
-	// cout << "pushing back data for index: " << lastIndex << endl;
-	delta.resize(pm.size());
-	for(int i=0; i < delta.size(); i++){
-	  delta[i].resize(0);
-	}
-	exptIndices.resize(0);
-	lastIndex = currentIndex;
-	// i.e. create a probeSet, and 
-      }
+
       if(experiments.find(exp) == experiments.end()){
-	// PUKE.. HAVE TO REWRITE COMPLETELY
-	cerr << "PUKE,,, PUKE,,, PUKE !!! CAN'T USE STRUCTURES LIKE THESE, REWRITE APPLICATION YOU FOOOL!!" << endl;
+	cerr << "PUKE !!! CAN'T USE STRUCTURES LIKE THESE, REWRITE APPLICATION YOU FOOOL!!" << endl;
 	cerr << "couldn't find the experiment for experiment: " << exp << endl;
 	return;
       }
-      exptIndices.push_back(experiments[exp].dbaseIndex);
-      if(pm.size() != delta.size() || mm.size() != delta.size()){
+      //      exptIndices.push_back(experiments[exp].dbaseIndex);
+      if(pm.size() != mm.size()){
 	cerr << "PUKE, going to segment fault if I don't sort this out.. vector sizes are different to each other.. " << endl;
 	return;
       }
-      for(int j=0; j < pm.size(); j++){
-	delta[j].push_back(pm[j]-mm[j]);     // the actual thing!!!
+      delta.resize(pm.size());
+      for(uint j=0; j < pm.size(); j++){
+	delta[j] = (pm[j]-mm[j]);     // the actual thing!!!
+      }
+      unsigned int i_pos = (currentIndex - 1);
+      if(i_pos < data.size()){
+	if(!data[i_pos]->allExptNo)
+	  data[i_pos] = new probe_set(currentIndex, experiments.size());
+	addDataTo_probe_set( data[i_pos], delta, experiments[exp].dbaseIndex );
+      }else{
+	cerr << "probeSetSet2::setData i_pos is too large " << i_pos << " >= " << data.size() << endl;
+	exit(1);
       }
     }
-    // and don't forget to do the last one..
   }
-  cout << "Cursor doesn't seem to fetch anything anymore, what's going on " << endl;
-  data.push_back(new probe_set(lastIndex, delta, exptIndices, experiments.size()));
-  // and that should be it. Ugly as hell if you ask me.. and very sensitive..
 }
+
+
 
 
 void ProbeSetSet2::setExpData(const char* conninfo){
@@ -278,7 +268,7 @@ void ProbeSetSet2::setExpData(const char* conninfo){
     cerr << "Couldn't fetch the chip equivalents, lets die.. " << endl;
     exit(1);
   }
-  for(uint i=0; i < cursor.Tuples(); i++){
+  for(int i=0; i < cursor.Tuples(); i++){
     int chipId = atoi(cursor.GetValue(i, 0));
     int chipEquiv = atoi(cursor.GetValue(i, 1));
     map<int, chipInfo>::iterator it = chipDescriptions.find(chipId);
@@ -540,7 +530,7 @@ void ProbeSetSet2::setExpData(const char* conninfo){
   }
   // then just go and open all of the files..
   ifstream* tstream;   // hmm...
-  for(int i=0; i < cFileNames.size(); i++){
+  for(uint i=0; i < cFileNames.size(); i++){
     tstream = new ifstream(cFileNames[i].c_str(), ios::binary);
     if(!tstream){
       cerr << "Couldn't open file : " << cFileNames[i] << endl;
@@ -741,7 +731,7 @@ void ProbeSetSet2::setExpData(const char* conninfo){
 	//cout << "n is now " << n << endl;
 	//	probeSetMatch* tempMatch = new probeSetMatch(afid, afid-1, afStart, afEnd, afLength, alignLength, matches, genStart, genEnd, expect, strand, chrom, afMatchSeq, ensemblMatchSeq);
 	probeSetMatch* tempMatch = new probeSetMatch(afid, afid-1, afStart, afEnd, afLength, alignLength, matches, genStart, genEnd, expect, strand, chrom);
-	if(afid-1 < probeData.size()){
+	if((uint)(afid-1) < probeData.size()){
 	  probeData[afid-1].addProbeSetMatch(tempMatch);
 	}else{
 	  cerr << "Somehow we got an index that is not covered by the probeData structure, better die and clean it up" << endl
@@ -1092,7 +1082,7 @@ void ProbeSetSet2::setExpData(const char* conninfo){
 void ProbeSetSet2::guessGenes(){
   // go through all of the probe set matches within the probe set data things and try to attach a best guess gene for each one..
   ofstream out("ensemblBlastGuesses");
-  for(int i=0; i < probeData.size(); i++){
+  for(uint i=0; i < probeData.size(); i++){
     //    cout << "guessing for probeData " << i << endl;
     int bestGuessIndex = 0;
     vector<int> downstreamDistances(probeData[i].probeSetMatches.size());
@@ -1104,7 +1094,7 @@ void ProbeSetSet2::guessGenes(){
     bool print = false;
     //bool print = (i == 20476 || i == 17953 || i == 21113);
     cout << "index : " << i << "   probe set matches size : " << probeData[i].probeSetMatches.size() << endl;
-    for(int j=0; j < probeData[i].probeSetMatches.size(); j++){
+    for(uint j=0; j < probeData[i].probeSetMatches.size(); j++){
       // get an iterator for the chromAnnotation..
       map<string, chromAnnotation*>::iterator it = chromosomeAnnotation.find(probeData[i].probeSetMatches[j].chromosome);
       if(it == chromosomeAnnotation.end()){
@@ -1276,7 +1266,7 @@ void ProbeSetSet2::guessGenes(){
     int maxIndex = 0;
     int direction = 0;   // (-1 or +1 when defined. ).
     //cout << "and then here " << endl;
-    for(int j=0; j < upstreamScores.size(); j++){
+    for(uint j=0; j < upstreamScores.size(); j++){
       if(upstreamScores[j] > maxScore){
 	maxScore = upstreamScores[j];
 	maxIndex = j;

@@ -38,33 +38,94 @@ using namespace std;
 float* meanValues(vector< vector<float> >& p){
   // return the mean values..
   // assume length is the same for all. change this later if we need to.
-  //vector<float> mean;
-  //if(p.size() == 0){
-  //  return(mean);
-  //}
   float* mean = new float[p[0].size()];
-  //  mean.resize(p[0].size());
-  for(int i=0; i < p.size(); i++){
-    for(int j=0; j < p[i].size(); j++){
+  for(uint i=0; i < p.size(); i++){
+    for(uint j=0; j < p[i].size(); j++){
       mean[j] += p[i][j];
     }
   }
-  for(int i=0; i < p[0].size(); i++){
+  for(uint i=0; i < p[0].size(); i++){
     mean[i] = mean[i]/p.size();
   }
   return(mean);
 }
 
-//probe_set::probe_set(){
-//}
 
 probe_set::probe_set(){
   index = 0;
   probeNo = 0;
   exptSize = 0;
   allExptNo = 0;
+  exptCapacity = 0;
   exptIndex = 0;
   exptLookup = 0;
+  probes = 0;
+  exptIndex = 0;
+}
+
+probe_set::probe_set(int i, uint allESize){
+  probeNo = 0;
+  exptSize = 0;
+  exptCapacity = 0;
+  exptIndex = 0;
+
+  index = i;
+  allExptNo = allESize;
+  exptLookup = new int[allExptNo];
+  for(uint i=0; i < allExptNo; ++i)
+    exptLookup[i] = -1;
+  probes = 0;
+  exptIndex = 0;
+
+}
+
+bool addDataTo_probe_set(probe_set* ps, vector<float>& p, uint expt)
+{
+  int expt_increment = 40;  // this should be settable.. 
+  if(!ps->probeNo)
+    ps->probeNo = p.size();
+  if(ps->probeNo != p.size()){
+    cerr << "addDataTo_probe_set vector p size " << p.size() << " != " << ps->probeNo << endl;
+    exit(1);
+  }
+  // grow the data if necessary.. 
+  uint exptCapacity = ps->exptCapacity;
+  if(ps->exptSize == exptCapacity){
+    exptCapacity += expt_increment;  // swap all values lower down.
+    
+    uint* exptIndex = new uint[exptCapacity];
+    for(uint i=0; i < ps->exptSize; ++i)
+      exptIndex[i] = ps->exptIndex[i];
+    
+    float** probes = new float*[ps->probeNo];
+    for(uint i=0; i < ps->probeNo; ++i){
+      probes[i] = new float[exptCapacity];
+      for(uint j=0; j < ps->exptSize; ++j)
+	probes[i][j] = ps->probes[i][j];
+    }
+    // This section should be atomic if we want to be able to grow
+    // the data during operation. (Where to place mutexes is unclear,
+    // but it should be possible.. )
+    float** temp_p = ps->probes;
+    uint* temp_ei = ps->exptIndex;
+
+    ps->exptCapacity = exptCapacity;
+    ps->exptIndex = exptIndex;
+    ps->probes = probes;
+    if(temp_p){
+      for(uint i=0; i < ps->probeNo; ++i)
+	delete []temp_p[i];
+      delete []temp_p;
+    }
+    delete []temp_ei;
+  }
+
+  ps->exptIndex[ps->exptSize] = expt;
+  ps->exptLookup[ expt ] = ps->exptSize;
+  for(uint i=0; i < p.size(); ++i)
+    ps->probes[i][ps->exptSize] = p[i];
+  ps->exptSize++;
+  return(true);
 }
 
 probe_set::probe_set(int i, vector< vector<float> >& p, vector<uint>& eindices, uint allESize){
@@ -75,9 +136,10 @@ probe_set::probe_set(int i, vector< vector<float> >& p, vector<uint>& eindices, 
   probeNo = p.size();
   exptSize = p[0].size();
   allExptNo = allESize;
-  for(int i=0; i < p.size(); i++){
+  exptCapacity = exptSize;
+  for(uint i=0; i < p.size(); i++){
     probes[i] = new float[p[i].size()];
-    for(int j=0; j < p[i].size(); j++){
+    for(uint j=0; j < p[i].size(); j++){
       probes[i][j] = p[i][j];
     }
   }
@@ -87,21 +149,18 @@ probe_set::probe_set(int i, vector< vector<float> >& p, vector<uint>& eindices, 
   }
   // set up the exptLookup, with all -1 values.. 
   exptLookup = new int[allESize];
-  for(int i=0; i < allESize; i++){ 
+  for(uint i=0; i < allESize; i++){ 
     exptLookup[i] = -1; 
   }     // default to -1;
 
   exptIndex = new uint[eindices.size()];
-  for(int i=0; i < eindices.size(); i++){
+  for(uint i=0; i < eindices.size(); i++){
     exptIndex[i] = eindices[i];
-    exptLookup[eindices[i]] = i;        // and here we hope that everything is OK.. no error checking. it's faster this way.
+    exptLookup[eindices[i]] = i;        
+    // no error checking; initially, for speed,
+    // but since clearly this is not limiting we might want to rethink this.
   }
-  //probes = p;
   mean = meanValues(p);
-  //cout << "finished making probe set for index " << index << endl;
-  //  for(int i=0; i < eindices.size(); i++){
-  //  exptLookup.insert(make_pair(eindices[i], i));      // no checking so its up to the client.. bad, but faster.. 
-  //}
 }
 
 probe_set::~probe_set(){
@@ -117,7 +176,7 @@ probe_data::probe_data(){   // is this really necessary ?
 
 void ishProbeData::addIshProbeMatch(ishProbeMatch* ipm){
   int maxRange = 100000;    // the size of an indiviidual thingy..
-  for(int i=0; i < probeMatches.size(); i++){
+  for(uint i=0; i < probeMatches.size(); i++){
     ishProbeMatchSet* it = probeMatches[i];   // historical,, for shorthand.. 
     if(it->assemblyId == ipm->assemblyId){
       (*it).insertMatch(ipm);
@@ -260,7 +319,7 @@ vector<probe_data> data_from_db(const char* conninfo) {
     index = atoi(data.GetValue(i, 0));
     p_index = index-1;
     go_gen = atoi(data.GetValue(i, 1));
-    if(p_data[p_index].go.size() < (go_gen)){
+    if((int)p_data[p_index].go.size() < (go_gen)){
       p_data[p_index].go.resize(15);             // I DON'T UNDERSTAND THIS, SOMEONE PLS. EXPLAIN..
     }
     p_data[p_index].go[go_gen-1].push_back(data.GetValue(i,2));
