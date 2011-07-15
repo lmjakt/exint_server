@@ -115,55 +115,17 @@ probe_data::probe_data(){   // is this really necessary ?
   blastGuess = 0;
 } 
 
-// moved to dataStructs.cpp
-// void probeSetMatchSet::insertMatch(probeSetMatch* psm){
-//   matches.insert(psm);
-//   // increment the sums.. if this region does not overlap with any of the previous matches..
-//   ///// NOTE that we will here be screwed by multiple matches to the same sequence in the affymetrix probe set
-//   ///// as may be the case if it mathces to repetitive sequences. However, I cannot at the present think of a good
-//   ///// way of compansating for this. All ways I can think of are either too complicated, or don't work properly.
-//   ///// It is also the case that perhaps if we have multiple mathces this does increase the likelihood of linkage 
-//   ///// to a given gene, though, if it is only small part of the probe set then we will probably be screwed.
-//   ///// For now, I will leave it, and see how well this simple stuff works, and if it seems to be a problem, then
-//   ///// I will have to use one of the more complicated things... 
-  
-//   matchSum += (psm->pEnd - psm->pStart);
-//   //score += ((float)(psm->pEnd - psm->pStart)) * psm->percent/(float)100; -- this is already set at the beginning so no need to worry about it.. 
-//   //mismatchSum += (psm->alignLength - psm->match);  // ok.. !!
-//   //expectProduct *= psm->expectation;
-
-//   //if(psm->cStart < minPos){ minPos = psm->cStart; }
-//   //if(psm->cEnd > maxPos){ maxPos = psm->cEnd; }
-//   //if(psm->expectation < minExpect){ minExpect = psm->expectation; }
-// }
-
-// below moved to datastructs.cpp
-// void ishProbeMatchSet::insertMatch(ishProbeMatch* ipm){
-//   matches.insert(ipm);
-//   matchSum += ipm->match;
-//   mismatchSum += (ipm->alignLength - ipm->match);
-//   expectProduct *= ipm->expectation;
-//   if(ipm->cStart < minPos){ minPos = ipm->cStart; }
-//   if(ipm->cEnd > maxPos){ maxPos = ipm->cEnd; }
-//   if(ipm->expectation < minExpect){ minExpect = ipm->expectation; }
-// }
-
 void ishProbeData::addIshProbeMatch(ishProbeMatch* ipm){
   int maxRange = 100000;    // the size of an indiviidual thingy..
-  //vector<ishProbeMatchSet>::iterator it;         .... -- gives me a parse error for some unknown reason. I really don't understand why.
   for(int i=0; i < probeMatches.size(); i++){
-    //  for(it = probeMatches.begin(); it != probeMatches.end(); it++){
     ishProbeMatchSet* it = probeMatches[i];   // historical,, for shorthand.. 
     if(it->assemblyId == ipm->assemblyId){
-    //  if((*it).chromosome == ipm->chromosome && abs((*it).minPos - ipm->cStart) < maxRange && abs((*it).maxPos - ipm->cEnd) < maxRange && ipm->probeIndex == (*it).dbIndex && (*it).strand == ipm->strand){
-      //if((*it).chromosome == ipm->chromosome && abs((*it).minPos - ipm->cStart) < maxRange && abs((*it).maxPos - ipm->cEnd) < maxRange && ipm->probeIndex == (*it).dbIndex && (*it).strand == ipm->strand){
       (*it).insertMatch(ipm);
       sort(probeMatches.begin(), probeMatches.end());    // which puts the one with the highest score first.. though it doesn't actually matter that much.. 
       return;
     }
   }
   //  probeMatches.push_back(ishProbeMatchSet(ipm));
-  //sort(probeMatches.begin(), probeMatches.end());
   cerr << "Unassembled ishProbeMatch, bugger, maybe I should die here instead of bravely carrying on.. " << endl;
 }
 
@@ -175,10 +137,6 @@ void probe_data::addProbeSetMatch(probeSetMatch* psm){
   for(it = probeSetMatches.begin(); it != probeSetMatches.end(); it++){
     if((*it).chromosome == psm->chromosome && abs((*it).minPos - psm->cStart) < maxRange && abs((*it).maxPos - psm->cEnd) < maxRange && psm->dbIndex == (*it).dbIndex && (*it).strand == psm->strand){
       // OK, so that could give me a little bit larger range than maxRange, but what can you do eh?? 
-      //     (*it).matches.insert(psm);
-      //if(psm->cStart < (*it).minPos){ (*it).minPos = psm->cStart; }
-      //if(psm->cEnd > (*it).maxPos){ (*it).maxPos = psm->cEnd; }
-      //if(psm->expectation < (*it).minExpect){ (*it).minExpect = psm->expectation; }
       (*it).insertMatch(psm);
       sort(probeSetMatches.begin(), probeSetMatches.end());
       return;  // I'm done.. 
@@ -206,7 +164,6 @@ vector<probe_data> data_from_db(const char* conninfo) {
     exit(1);
   }
   // lets send some commands to the database FOR THE MOMENT: limit to data for chip 1 to keep the thingy..
-  //  if( !data.Declare("select a.index, a.af_id, a.id, a.suid, b.gene, b.title, a.description, c.description from p_sets a, uni_data b, tigr_annotation c where a.suid=b.index and a.af_id = c.af_id")){
 
   //// IMPORTANT NOTE : the probe_data table has a stupid structure and can have several lines for each probe set, even though it really shouldn't. It's based on a 
   //// join between a few different tables, (don't remember exactly, but .. ) afid_uid_map, p_sets, uni_data and tigr_annotation

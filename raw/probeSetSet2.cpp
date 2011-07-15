@@ -118,9 +118,7 @@ vector<int> ProbeSetSet2::expandIndexByGenomeLinkage(vector<uint> ind){
 
 
 void ProbeSetSet2::setData(const char* conninfo, const char* tableName){
-  //cout << "at the beginning of setData" << endl;
-  //string conninfo("dbname=");
-  //conninfo += dbname;2375
+
   PgCursor cursor(conninfo, "portal");
   if(cursor.ConnectionBad()){
     cerr << "Connection to Database " << conninfo << " failed"
@@ -130,7 +128,7 @@ void ProbeSetSet2::setData(const char* conninfo, const char* tableName){
   ostringstream os;
   os << "select * from " << tableName << " order by probe, experiment";
 
-  const char* query = os.str().c_str(); //"select * from data order by probe, experiment";
+  const char* query = os.str().c_str(); 
 #ifdef EXPERIMENTAL_SERVER
   query = "select * from little_data order by probe, experiment";
   cout << "query should now be set to " << query << endl;
@@ -161,24 +159,17 @@ void ProbeSetSet2::setData(const char* conninfo, const char* tableName){
     cout << "Getting " << cursor.Tuples() <<  " tuples   : " << counter  << endl;
     counter += 1000;
     for(int i=0; i < cursor.Tuples(); i++){
-      //   cout << "\ti : " << i << endl;
       currentIndex = atoi(cursor.GetValue(i, 0));
-      //cout << "current Index: " << currentIndex << endl;
       exp = atof(cursor.GetValue(i, 1));
       pmString = cursor.GetValue(i, 2);
       mmString = cursor.GetValue(i, 3);
-      //cout << "pmString : :" << pmString << endl;
       pm = splitString(pmString);
-      //cout << "Size of resulting pm vector " << pm.size() << endl;
       mm = splitString(mmString);
-      //cout << "managed to split the strings!! " << endl;
       if(currentIndex != lastIndex){
 	if(lastIndex != -1){
-	  //cout << "current Index: " << currentIndex << "\tlast Index: " << lastIndex << endl;
 	  int indexPos = lastIndex - 1;
 	  if(indexPos < data.size() && probeData[indexPos].index == lastIndex){
 	    data[indexPos] = new probe_set(lastIndex, delta, exptIndices, experiments.size());
-	    //cout << "creating a probe set with index : " << lastIndex << "  at positions ; " << indexPos << endl;
 	  }else{
 	    cerr << "no index for probe set " << lastIndex << " don't know why .. " << endl;
 	    cerr << "index pos is : " << indexPos << " probeData[" << indexPos << "].index is " << probeData[indexPos].index << endl; 

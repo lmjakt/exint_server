@@ -33,105 +33,18 @@
 using namespace std;
 
 
-// moved to datatructs.cpp
-/* struct probeSetMatchSet { */
-/*   probeSetMatchSet(){ */
-/*     minExpect = 1; */
-/*     minPos = maxPos = 0; */
-/*     chromosome = ""; */
-/*   };    // empty constructor,, it's easier that way..  */
-/*   probeSetMatchSet(probeSetMatch* psm){ */
-/*     matches.insert(psm); */
-/*     dbIndex = psm->dbIndex; */
-/*     minPos = psm->cStart; */
-/*     maxPos = psm->cEnd; */
-/*     minExpect = psm->expectation; */
-/*     expectProduct = psm->expectation; */
-/*     chromosome = psm->chromosome;  // !! I hope..  */
-/*     afLength = psm->afLength; */
-/*     matchSum = psm->match;                    // increment at later stages... */
-/*     mismatchSum = psm->alignLength-matchSum;  // and keep incrementing these later on as well. */
-/*     strand = psm->strand; */
-/*   } */
-/*   void insertMatch(probeSetMatch* psm); */
-/*   set<probeSetMatch*> matches; */
-/*   string chromosome; */
-/*   int dbIndex;      // the probe set id. -- we should not mix matches from different probe sets after all.  */
-/*   int minPos; */
-/*   int maxPos;   // the min and max positions.. */
-/*   double minExpect;  // the minimumexpectation.. */
-/*   double expectProduct;  // the product of the individual expectations.. sometimes I suppose this should be useful..  */
-/*   int matchSum; */
-/*   int mismatchSum; */
-/*   int afLength;       // redundant I know, as it's in all of the probe_set_matches..  */
-/*   int strand; */
-/*   friend bool operator<(const probeSetMatchSet& a, const probeSetMatchSet& b){ */
-/*     return(a.minExpect < b.minExpect); */
-/*   } */
-/* }; */
-
-/// please forgive me my sins.. copying and pasting programming where I should have set up 
-/// some sort of reasonable inheritance instead... well one learns by one's mistakes, eventually I suppose.. 
-
-// below moved to dataStructs.h   
-
-/* struct ishProbeMatchSet { */
-/*   ishProbeMatchSet(){ */
-/*     //minExpect = 1; */
-/*     minPos = maxPos = 0; */
-/*     chromosome = ""; */
-/*   };    // empty constructor,, it's easier that way..  */
-/*   //  ishProbeMatchSet(ishProbeMatch* ipm, int strnd, int pl, int beg, int stp, int asid){ */
-/*   ishProbeMatchSet(int dbi, string c, int strnd, int pl, int beg, int stp, int asid, float scr){ */
-/*     //matches.insert(ipm); */
-/*     dbIndex = dbi; */
-/*     minPos = beg; */
-/*     maxPos = stp; */
-/*     //minExpect = ipm->expectation; */
-/*     //expectProduct = ipm->expectation; */
-/*     chromosome = c;  // !! I hope..  */
-/*     pLength = pl; */
-/*     matchSum = 0;                    // increment at later stages... */
-/*     score = scr; */
-/*     //mismatchSum = ipm->alignLength-matchSum;  // and keep incrementing these later on as well. */
-/*     strand = strnd; */
-/*     assemblyId = asid; */
-/*   } */
-/*   void insertMatch(ishProbeMatch* psm); */
-/*   set<ishProbeMatch*> matches; */
-/*   string chromosome; */
-/*   int dbIndex;      // the probe set id. -- we should not mix matches from different probe sets after all.  */
-/*   int minPos; */
-/*   int maxPos;   // the min and max positions.. --- i.e. start and stop, we can get direclty from the thingy.. now..  */
-/*   //  double minExpect;  // the minimumexpectation.. */
-/*   //double expectProduct;  // the product of the individual expectations.. sometimes I suppose this should be useful..  */
-/*   int matchSum;            // use the score.. from the new style table.. */
-/*   float score;             // sum (lengths * percent) for all matches..  */
-/*   //int mismatchSum; */
-/*   int pLength;       // redundant I know, as it's in all of the probe_set_matches..  */
-/*   int strand; */
-/*   int assemblyId; */
-/*   friend bool operator<(const ishProbeMatchSet& a, const ishProbeMatchSet& b){ */
-/*     return(a.score > b.score); */
-/*   } */
-/* }; */
-
 struct probe_set {
   float** probes;
   uint probeNo;    // the number of probes.
   uint exptSize;   // the numbers of experiments for this probe set. 
   
 
-  //vector< vector<float> > probes;   // probes[i][j] ; i-probe pair number, j-experiment index
-
   uint* exptIndex;                 // the experimental indices. should have same number ..
   int* exptLookup;                // all experiments, with the value being the index of the -1 not defined.. 
   uint allExptNo;                // the size of all of the experiments. Tricky this !!... 
 
-  //  vector<int> exptIndex;         // the experimental indices..
-  // map<int, int> exptLookup;         // key is the experiment, value is the vector position.. 
   float* mean; 
-  // vector<float> mean;               // mean values, initially set to the full mean, but recalculated after filtering.. -
+
   int index;                        // probe set index -- related to the affymetrix thingy
   probe_set();
   probe_set(int i, vector< vector<float> >& p, vector<uint>& eindices, uint allESize);
@@ -219,19 +132,10 @@ struct probe_data {
   string gbid;            // gb id from thingy
   string afid;            // af_id from thingy
   vector<uniGeneData> ugData;     // for the unigene fields.. 
-  //  vector<celeraMatch> celeraMatches;  // celera genes with matches.. 
-
-  //  vector<blastMatch> ensemblMatches;   // matches to ensembl gene predictions. quite complex. 
-  // map<int, blastGenomeMatch> genomeMatches;  // the int is the first of the triplets defined above.. !! the lowerId
-
-  //vector<probeSetMatch*> probeSetMatches;    // pointers to genomic locations. maybe it should be a map of sorts, but I'm not sure yet. 
   vector<probeSetMatchSet> probeSetMatches;    // pointers to genomic locations. maybe it should be a map of sorts, but I'm not sure yet. 
   int blastGuess;                      // the ensembl gene that seems to match the best given some silly checks.. 
   string sequence;                    // lets get the sequence as well. Era-san' been asking for it.. !!
 
-  //int ugid;               // unigene_id 
-  //string uggene;          // unigene gene field
-  //string ugtitle;         // unigene title field
   string afdes;           // affy description.. 
   string tigrDescription; // tigr annotation from table tigr_annotation.. 
   vector< vector<string> > go;    // go classification from dots..
