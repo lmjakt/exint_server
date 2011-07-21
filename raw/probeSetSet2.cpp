@@ -118,7 +118,7 @@ vector<int> ProbeSetSet2::expandIndexByGenomeLinkage(vector<uint> ind){
 
 
 // This function changed to make use of the addDataTo_probe_set
-// function implemented in probe_set.h
+// function defined in probe_set.h
 // As of writing (2011-07-15) this function has not been tested
 // very thoroughly. But seems to work.
 void ProbeSetSet2::setData(const char* conninfo, const char* tableName){
