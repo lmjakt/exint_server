@@ -36,6 +36,8 @@
 #include <vector>
 #include <signal.h>            // need to be able to handle or ignore signals of different sorts. ?? 
 #include <time.h>              // since we store the sessionId as a value of time_t
+#include <libpq-fe.h>   // needed for the Oid type
+
 //#include "processor.h"
 #include "../netArray/netArray.h"
 #include "../raw/probe_set.h"
@@ -156,9 +158,10 @@ class ConnectionObject : public QObject, public QThread
   // Log in functions ..
   void logIn();
   void logOut();  // these change the tables user_log
-  int dbCommand(string cmd);  // connect to the database and execute the command. Return CmdTuples or -1 if some problem
+  int dbCommand(string cmd, Oid* oid_value=0);  // connect to the database and execute the command. Return CmdTuples or -1 if some problem
+  vector<vector<string> > dbLookup(string cmd, int& error);
   char* getLargeObject(int oid, int& length);
-
+  Oid storeLargeObject(char* data, size_t size);
   // some commands..   -- 
   void checkFlags();              // check the boolean flags to see if we need to update the user with something.. 
   void parseCommand();                        // parse the contents and do one of the following things..

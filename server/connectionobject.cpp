@@ -55,7 +55,7 @@
 #include <set>
 #include <map>
 #include <libpq/libpq-fs.h>
-#include <libpq++.h>
+//#include <libpq++.h>
 #include <unistd.h>
 #include <crypt.h>
 #include <stdlib.h>
@@ -876,23 +876,35 @@ bool ConnectionObject::authenticate(){
   // and then we just have to see if we return anything.. 
 
   // I don't quite remember why I'm using the PgCursor interface. I have a feeling that it is broken
-  PgCursor conn(conninfo, "portal");
-  if(conn.ConnectionBad()){
-    cerr << "ConnectionObject::authenticate db connection not good" << endl;
+  // PgCursor conn(conninfo, "portal");
+  // if(conn.ConnectionBad()){
+  //   cerr << "ConnectionObject::authenticate db connection not good" << endl;
+  //   return(false);
+  // }
+  // if(!conn.Declare(query.str().c_str())){
+  //   cerr << "ConnectionObject::authenticate conn.declare command didn't work: " << query << endl;
+  //   return(false);
+  // }
+  // if(!conn.Fetch()){
+  //   cerr << "ConnectionObject::authenticate conn.fetch didn't fetch anything" << endl;
+  //   return(false);
+  // }
+  
+  int lookup_error = 0;
+  vector<vector<string> > user_lookup = dbLookup(query.str(), lookup_error);
+  if(lookup_error){
+    cerr << "Database connection or query error. Failed to authenticate user" << endl;
     return(false);
   }
-  if(!conn.Declare(query.str().c_str())){
-    cerr << "ConnectionObject::authenticate conn.declare command didn't work: " << query << endl;
+  if(!user_lookup.size()){
+    cerr << "Failed to authenticate user " << currentUserName << endl;
     return(false);
   }
-  if(!conn.Fetch()){
-    cerr << "ConnectionObject::authenticate conn.fetch didn't fetch anything" << endl;
-    return(false);
-  }
-  int tuples = conn.Tuples();
+
+  uint tuples = user_lookup.size(); //conn.Tuples();
   if(tuples > 0){
     authenticated = true;
-    userId = atoi(conn.GetValue(0, 0));
+    userId = atoi(user_lookup[0][0].c_str()); //conn.GetValue(0, 0));
     logInTime = time(&logInTime);
     logIn();
     return(true);
@@ -925,7 +937,8 @@ void ConnectionObject::logOut(){
 }
 
 
-int ConnectionObject::dbCommand(string cmd){
+int ConnectionObject::dbCommand(string cmd, Oid* oid_value){
+  if(oid_value) *oid_value = 0;
   PGconn* conn = PQconnectdb(conninfo);
   if(PQstatus(conn) != CONNECTION_OK){
     cerr << "ConnectionObject::dbCommand database connection failed" << endl;
@@ -934,9 +947,57 @@ int ConnectionObject::dbCommand(string cmd){
   }
   PGresult* res = PQexec(conn, cmd.c_str());
   int cmdTuples = atoi(PQcmdTuples(res));
+  if(oid_value)
+    *oid_value = PQoidValue(res);
+  PQclear(res);
   PQfinish(conn);
   //delete escapedString;
   return(cmdTuples);
+}
+
+// this should be used for select type commands
+vector<vector<string> > ConnectionObject::dbLookup(string cmd, int& error){
+  vector<vector<string> > resultTable;
+  error = 0;
+  PGconn* conn = PQconnectdb(conninfo);
+  if(!conn){
+    error = PGRES_FATAL_ERROR;
+    return(resultTable);
+  }
+  if(PQstatus(conn) != CONNECTION_OK){
+    cerr << "ConnectionObject::dbLookup database connection failed" << endl;
+    error = 1;
+    PQfinish(conn);
+    return(resultTable);
+  }
+  PGresult* res = PQexec(conn, cmd.c_str());
+  if(PQresultStatus(res) != PGRES_TUPLES_OK){
+    error = 2;
+  }
+
+  if(error){
+    PQclear(res);
+    PQfinish(conn);
+    return(resultTable);
+  }    
+  int nTuples = PQntuples(res);  // not unsigned int?
+  int nFields = PQnfields(res);
+
+  if(error){
+    PQclear(res);
+    PQfinish(conn);
+    return(resultTable);
+  }
+
+  resultTable.resize(nTuples);
+  for(unsigned int i=0; i < resultTable.size(); ++i){
+    resultTable[i].resize(nFields);
+    for(unsigned int j=0; j < resultTable[i].size(); ++j)
+      resultTable[i][j] = PQgetvalue(res, i, j);  // makes a deep copy?
+  }
+  PQclear(res);
+  PQfinish(conn);
+  return(resultTable);
 }
 
 char* ConnectionObject::getLargeObject(int oid, int& length)
@@ -1006,6 +1067,62 @@ char* ConnectionObject::getLargeObject(int oid, int& length)
   return(buf);
 }
 
+// returns the oid of the created object
+// an Oid is probably the same as an unsigned int
+Oid ConnectionObject::storeLargeObject(char* data, size_t size)  // ought to use const char*
+{
+  // steps to write an object
+  // 0. start a transaction block
+  // 1. open a connection to the database
+  // 2. create a large object
+  // 3. open the object
+  // 4. write to the object
+  // 5. return the object identifier.
+  // 6. commit a the transaction.
+  PGconn* conn = PQconnectdb(conninfo);
+  if(PQstatus(conn) != CONNECTION_OK){
+    cerr << "ConnectionObject::getLargeObject database connection failed" << endl;
+    cerr << "Error : " << PQerrorMessage(conn) << endl;
+    PQfinish(conn);
+    return(0);
+  }
+  PGresult* res = PQexec(conn, "BEGIN");
+  if(PQresultStatus(res) != PGRES_COMMAND_OK){
+    cerr << "ConnectionObject::getLargeObject failed to start transaction" << endl;
+    cerr << "Error : " << PQerrorMessage(conn) << endl;
+    PQfinish(conn);
+    return(0);
+  }
+  Oid oid = lo_creat(conn, INV_WRITE);
+  if(!oid){
+    cerr << "storeLargeObject unable to create large object" << endl;
+    PQfinish(conn);
+    return(oid);
+  }
+  int fd = lo_open(conn, oid, INV_WRITE);
+  if(fd < 0){
+    cerr << "storeLargeObject unable to open large object for writing" << endl;
+    PQfinish(conn);
+    return(oid);
+  }
+  int bytes_written = lo_write(conn, fd, data, size);
+  if(bytes_written != size){
+    cerr << "storeLargeObject: stored only part of the large object\n"
+	 << "consider rewriting this function a bit smarter" << endl;
+    res = PQexec(conn, "ABORT"); // don't bother checking
+    PQfinish(conn);
+    return(0);
+  }
+  res = PQexec(conn, "COMMIT");
+  if(PQresultStatus(res) != PGRES_COMMAND_OK){
+    cerr << "storeLargeObject unable to commit the transaction. Giving up and returning 0" << endl;
+    PQfinish(conn);
+    return(0);
+  }
+  PQfinish(conn);
+  return(oid);
+}
+
 bool ConnectionObject::createSession(){
   //cout << "hello there lastMessage is " << lastMessage << endl;
   vector<QString> words = splitString(lastMessage, '|');        // use a pipe for the delimiter, I don't think the user will use this!
@@ -1016,16 +1133,23 @@ bool ConnectionObject::createSession(){
   /// that I can keep this index during the work period. I can look up this index from the sequence table, or
   //  Ok, get the nextvalue from the session_list, then use this for the both the thing and the other thingyy. using work and others..
 
-  PgDatabase conn(conninfo);
-  conn.Exec("select nextval('session_list')");
-  if(conn.Tuples() != 1){
+  int lookup_error = 0;
+  vector<vector<string> > session_list_next_value = dbLookup("select nextval('session_list')", lookup_error);
+  if(!session_list_next_value.size())
     return(false);
-  }
+
+  // PgDatabase conn(conninfo);
+  // conn.Exec("select nextval('session_list')");
+  // if(conn.Tuples() != 1){
+  //   return(false);
+  // }
+
   vector<string> keywords;    // for the sessionInformation creator
   string title = words[0].latin1();
   string description;
   set<int> om;       // othermembers, just needed for the constructor.. ugly.. but there you go. 
-  int sessionId = atoi(conn.GetValue(0, 0));   // should be OK!!
+  int sessionId = atoi(session_list_next_value[0][0].c_str());
+  //  int sessionId = atoi(conn.GetValue(0, 0));   // should be OK!!
   bool transactionOk = false;     // set to false if any problems.. 
   // and now begin work.. !!
   sessionInsert << "insert into sessions values (" << sessionId << "," << userId << ", timestamp 'now', timestamp 'now', '"
@@ -1038,47 +1162,69 @@ bool ConnectionObject::createSession(){
     description = "";
   }
   sessionInsert << ")";
-  if(conn.Exec("begin work")){ transactionOk = true; }
-  if(transactionOk){
-    if(conn.Exec(sessionInsert.str().c_str())){ 
-      for(uint i=2; i < words.size(); i++){
-	ostringstream keywordInsert;
-	keywordInsert << "insert into session_keywords values (" << sessionId << ", '" << words[i] << "')";
-	if(!conn.Exec(keywordInsert.str().c_str())){ transactionOk = false; }
+
+  int cmdTuples = dbCommand(sessionInsert.str());
+  
+  if(!cmdTuples){
+    for(uint i=2; i < words.size(); ++i){
+      ostringstream keywordInsert;
+      keywordInsert << "insert into session_keywords values (" << sessionId << ", '" << words[i] << "')";
+      int kw_cmdTuples = dbCommand(keywordInsert.str());
+      if(!kw_cmdTuples){ // just warn
+	cerr << "ConnectionObject::createSession failed to insert keyword for\n"
+	     << keywordInsert << endl;
+      }else{
 	keywords.push_back(words[i].latin1());
       }
     }
   }
-  int checkValue;
-  string errorMessage = "Create Session Failed \n";
-  if(transactionOk){
-    checkValue = conn.Exec("commit work");
-    if(checkValue == PGRES_COMMAND_OK){
+      
+
+  // if(conn.Exec("begin work")){ transactionOk = true; }
+  // if(transactionOk){
+  //   if(conn.Exec(sessionInsert.str().c_str())){ 
+  //     for(uint i=2; i < words.size(); i++){
+  // 	ostringstream keywordInsert;
+  // 	keywordInsert << "insert into session_keywords values (" << sessionId << ", '" << words[i] << "')";
+  // 	if(!conn.Exec(keywordInsert.str().c_str())){ transactionOk = false; }
+  // 	keywords.push_back(words[i].latin1());
+  //     }
+  //   }
+  // }
+  // int checkValue;
+  // string errorMessage = "Create Session Failed \n";
+
+  if(cmdTuples){
+    //  if(transactionOk){
+    //checkValue = conn.Exec("commit work");
+    //if(checkValue == PGRES_COMMAND_OK){
       //cout << "everything OK, " << endl;
-      sApp("<sessionCreated>");
-      qiApp(sessionId);
-      sApp("<sessionCreatedEnd>");
-      writeArray();
-      //////////////  more to the point.. update the pSet->sessions data structure..
-      pSet->sessionMutex->lock();
-      pSet->sessions.insert(make_pair(sessionId, sessionInformation(sessionId, userId, title, description, keywords, om)));
-      pSet->sessionMutex->unlock();
-      return(true);
-    }else{
-      cerr << "We have a problem. PG_RES_COMMAND_OK is not so good. " << endl;
-      cerr << conn.ErrorMessage() << endl;
-      errorMessage += conn.ErrorMessage();
-      //writeString(errorMessage);
-      return(false);
-    }
-  }else{
-    checkValue = conn.Exec("rollback work");
-    cerr << "Rolling back the session insert for some unfathomable reason" << endl;
-    cerr << "conn.Exec check value for rollback is " << checkValue << endl;
+    sApp("<sessionCreated>");
+    qiApp(sessionId);
+    sApp("<sessionCreatedEnd>");
+    writeArray();
+    //////////////  more to the point.. update the pSet->sessions data structure..
+    pSet->sessionMutex->lock();
+    pSet->sessions.insert(make_pair(sessionId, sessionInformation(sessionId, userId, title, description, keywords, om)));
+    pSet->sessionMutex->unlock();
+    return(true);
   }
+  
+  cerr << "We have a problem. PG_RES_COMMAND_OK is not so good. " << endl;
+  //cerr << conn.ErrorMessage() << endl;
+  //errorMessage += conn.ErrorMessage();
+  //writeString(errorMessage);
   return(false);
-  /// and do some error checking.. 
 }
+
+  //}else{
+    // checkValue = conn.Exec("rollback work");
+  //   cerr << "Rolling back the session insert for some unfathomable reason" << endl;
+  //   cerr << "conn.Exec check value for rollback is " << checkValue << endl;
+  // }
+  // return(false);
+  /// and do some error checking.. 
+//}
 
 bool ConnectionObject::newAnnotation(){
   //cout << "Annotation thing. lastMessage is " << lastMessage << endl;
@@ -1106,13 +1252,20 @@ bool ConnectionObject::newAnnotation(){
   //  if(geneIndices.size() == 0){
   //  geneIndices.push_back(0);
   //}
-  ostringstream annotationInsert;
-  PgDatabase conn(conninfo);
-  conn.Exec("select nextval('annotation_count')");
-  if(conn.Tuples() != 1){
+
+  // PgDatabase conn(conninfo);
+  // conn.Exec("select nextval('annotation_count')");
+  // if(conn.Tuples() != 1){
+  //   return(false);
+  // }
+  int lookup_error;
+  vector<vector<string> > annotation_ids = dbLookup("select nextval('annotation_count')", lookup_error);
+  if(!annotation_ids.size())
     return(false);
-  }
-  int annoteId = atoi(conn.GetValue(0, 0));
+  int annoteId = atoi(annotation_ids[0][0].c_str());
+
+  //  int annoteId = atoi(conn.GetValue(0, 0));
+  ostringstream annotationInsert;
   if(sessionId == 0){
     annotationInsert << "insert into user_annotation (index, session_id, annotation, user_id) values (" << annoteId << ", "
 		     << sessionId << ", '" << words[1] << "', " << userId << " )";
@@ -1122,57 +1275,84 @@ bool ConnectionObject::newAnnotation(){
 		     << "where a.index=" << sessionId << " and a.user_id= " << userId;
   }
   bool insertOk = false;
-  if(conn.Exec("begin work")) { insertOk = true; }
-  //cout << annotationInsert.str() << endl;
-  set<int> associatedGenes;
-  conn.Exec(annotationInsert.str().c_str());
-  if(conn.CmdTuples() > 0){
-    for(uint i=0; i < geneIndices.size(); i++){
-      ostringstream geneInsert;
-      geneInsert << "insert into user_annotation_genes values (" << annoteId << ", " << geneIndices[i] << ")";
-      if(!conn.Exec(geneInsert.str().c_str())){ insertOk = false; }
-      associatedGenes.insert(geneIndices[i]);
-      //cout << geneInsert.str() << endl;
-    }
-  }else{
-    insertOk = false;
-  }
-  if(insertOk){
-    if(conn.Exec("commit work")){
-      ////// OK, now everything is Ok.. 
-      cout << "Annotation added OK " << endl;
-      sApp("<annotationAdded>");
-      qiApp(annoteId);
-      sApp("<annotationAddedEnd>");
-      writeArray();
-      //// and more to the point update the various appropriate datastructures.. the lookups and anothers..
-      if(sessionId > 0){          // i.e. the comment and the genes are tied to a session,, update sessionLookup.. 
-	pSet->sessionMutex->lock();
-	for(uint i=0; i < geneIndices.size(); i++){
-	  pSet->sessionLookup[geneIndices[i]].insert(sessionId);   // hope this is thread safe.. hmm..
-	}
-	pSet->sessionMutex->unlock();
-      }
-      if(words[1].length() > 0){    // i.e. there's actually some desription given in the thingy..
-	pSet->annotationMutex->lock();
-	pSet->userAnnotation.insert(make_pair(annoteId, annotationInformation(annoteId, userId, words[1].latin1(), associatedGenes)));
-	for(uint i=0; i < geneIndices.size(); i++){
-	  pSet->annotationLookup[geneIndices[i]].insert(annoteId);
-	}
-	pSet->annotationMutex->unlock();
-      }
-      return(true); 
-    }else{
-      cout << "Annotation add failed for some reason or other " << endl; 
-      string errorMessage = "Annotation add failed ";
-      errorMessage += conn.ErrorMessage();
-      //writeString(errorMessage);
-      return(false);
-    }
-  }else{
-    conn.Exec("rollback work"); 
+  int cmdTuples = dbCommand(annotationInsert.str());
+  if(!cmdTuples){
+    cerr << "Failed to insert annotation" << endl;
     return(false);
   }
+
+  set<int> associatedGenes;
+  for(uint i=0; i < geneIndices.size(); ++i){
+    ostringstream geneInsert;
+    geneInsert << "insert into user_annotation_genes values (" << annoteId << ", " << geneIndices[i] << ")";
+    cmdTuples = dbCommand(geneInsert.str());
+    if(cmdTuples)
+      associatedGenes.insert(geneIndices[i]);
+  }
+    
+  // if(conn.Exec("begin work")) { insertOk = true; }
+  // //cout << annotationInsert.str() << endl;
+
+  // set<int> associatedGenes;
+  // conn.Exec(annotationInsert.str().c_str());
+  // if(conn.CmdTuples() > 0){
+  //   for(uint i=0; i < geneIndices.size(); i++){
+  //     ostringstream geneInsert;
+  //     geneInsert << "insert into user_annotation_genes values (" << annoteId << ", " << geneIndices[i] << ")";
+  //     if(!conn.Exec(geneInsert.str().c_str())){ insertOk = false; }
+  //     associatedGenes.insert(geneIndices[i]);
+  //     //cout << geneInsert.str() << endl;
+  //   }
+  // }else{
+  //   insertOk = false;
+  // }
+  if(1){        // as we removed the insertOK from above.
+    //  if(insertOk){       
+    //if(conn.Exec("commit work")){  //
+      ////// OK, now everything is Ok.. 
+    cout << "Annotation added OK " << endl;
+    sApp("<annotationAdded>");
+    qiApp(annoteId);
+    sApp("<annotationAddedEnd>");
+    writeArray();
+    //// and more to the point update the various appropriate datastructures.. the lookups and anothers..
+    if(sessionId > 0){          // i.e. the comment and the genes are tied to a session,, update sessionLookup.. 
+      pSet->sessionMutex->lock();
+      for(uint i=0; i < geneIndices.size(); i++){
+	pSet->sessionLookup[geneIndices[i]].insert(sessionId);   // hope this is thread safe.. hmm..
+      }
+      pSet->sessionMutex->unlock();
+    }
+    if(words[1].length() > 0){    // i.e. there's actually some desription given in the thingy..
+      pSet->annotationMutex->lock();
+      pSet->userAnnotation.insert(make_pair(annoteId, annotationInformation(annoteId, userId, words[1].latin1(), associatedGenes)));
+      for(uint i=0; i < geneIndices.size(); i++){
+	pSet->annotationLookup[geneIndices[i]].insert(annoteId);
+      }
+      pSet->annotationMutex->unlock();
+    }
+    return(true); 
+  }
+  return(false);
+  // This was rewritten to remove use of libpq++ objects, and instead use the dbCommand and dbLookup
+  // functions.
+
+  // It should be possible to redo the thing by sending a single string containing many commands to dbCommand
+  // if any of those are wrong, nothing will happy and some sort of error code should be available.
+  // At the moment the code doesn't guarantee that sessions are synchronised between database and the memory
+  // object. That's not so good, but we can try to fix later.
+
+//   else{
+//     cout << "Annotation add failed for some reason or other " << endl; 
+//     string errorMessage = "Annotation add failed ";
+//     errorMessage += conn.ErrorMessage();
+//     //writeString(errorMessage);
+//     return(false);
+//   }
+// }else{
+//   conn.Exec("rollback work"); 
+//   return(false);
+//  }
 }
 
 bool ConnectionObject::updateSessionInformation(){
@@ -1191,33 +1371,42 @@ bool ConnectionObject::updateSessionInformation(){
   update << "update sessions set u_time = abstime(timestamp 'now'), title = '" << words[1].latin1()
 	 << "', description='" << words[2].latin1() << "' where index=" << sessionId
 	 << " and user_id=" << userId;
-  PgDatabase conn(conninfo);
-  conn.Exec(update.str().c_str());
-  if(conn.CmdTuples() == 1){  // everything OK, lets remove the old keywords, and insert the new ones..
-    conn.Exec("begin");
-    ostringstream delString;
-    delString << "delete from session_keywords where index=" << sessionId;
-    conn.Exec(delString.str().c_str());
-    for(uint i=3; i < words.size(); i++){
-      ostringstream insString;
-      insString << "insert into session_keywords values (" << sessionId << ", '"
-		<< words[i].latin1() << "')";
-      conn.Exec(insString.str().c_str());
-      keywords.push_back(words[i].latin1());
-    }
-    conn.Exec("commit");
-    ///////  assume that that worked, and now update the appropriate thingy..
-    pSet->sessionMutex->lock();
-    map<int, sessionInformation>::iterator it = pSet->sessions.find(sessionId);
-    if(it != pSet->sessions.end()){
-      (*it).second.title = title;
-      (*it).second.description = description;
-      (*it).second.keywords = keywords;
-    }
-    pSet->sessionMutex->unlock();
-  }
   
-  cout << "updated. tuples affected : " << conn.CmdTuples() << endl;
+  int cmdTuples = dbCommand(update.str());
+  if(!cmdTuples){
+    cerr << "updateSessionInformation failed to update with command:\n" << update.str() << endl;
+    return(false);
+  }
+  //  PgDatabase conn(conninfo);
+  //conn.Exec(update.str().c_str());
+  //   if(conn.CmdTuples() == 1){  // everything OK, lets remove the old keywords, and insert the new ones..
+  //conn.Exec("begin");
+  ostringstream delString;
+  delString << "delete from session_keywords where index=" << sessionId << ";";
+  //conn.Exec(delString.str().c_str());
+  for(uint i=3; i < words.size(); i++){
+    ostringstream insString;
+    insString << "insert into session_keywords values (" << sessionId << ", '"
+	      << words[i].latin1() << "')";
+    delString << "insert into session_keywords values (" << sessionId << ", '"
+	      << words[i].latin1() << "');";
+    //      conn.Exec(insString.str().c_str());
+    keywords.push_back(words[i].latin1());
+  }
+  cmdTuples = dbCommand(delString.str());
+  if(!cmdTuples){
+    cerr << "ConnectionObject::udpateSessionInformation failed to inserte / delete session_keywords values" << endl;
+  }
+  //    conn.Exec("commit");
+  ///////  assume that that worked, and now update the appropriate thingy..
+  pSet->sessionMutex->lock();
+  map<int, sessionInformation>::iterator it = pSet->sessions.find(sessionId);
+  if(it != pSet->sessions.end()){
+    (*it).second.title = title;
+    (*it).second.description = description;
+    (*it).second.keywords = keywords;
+  }
+  pSet->sessionMutex->unlock();
   return(true);
 }
 
@@ -1240,13 +1429,17 @@ bool ConnectionObject::updateAnnotation(){
   ostringstream updateStatement;
   updateStatement << "update user_annotation set annotation = '" << words[1]
 		  << "' where index = " << index << " and user_id = " << userId;
-  PgDatabase conn(conninfo);
-  if(!conn.Exec(updateStatement.str().c_str())){
-    cerr << "couldn't update with statement : " << endl;
-      // << updateStatement.str() << endl;
-    return(false);
-  }
-  if(conn.CmdTuples() == 1){    // everything Ok.. 
+  int cmdTuples = dbCommand(updateStatement.str());
+  
+  // PgDatabase conn(conninfo);
+  // if(!conn.Exec(updateStatement.str().c_str())){
+  //   cerr << "couldn't update with statement : " << endl;
+  //     // << updateStatement.str() << endl;
+  //   return(false);
+  // }
+  
+  
+  if(cmdTuples == 1){    // everything Ok.. 
     cout << "updated annotation succsefully " << endl;
     // and let's change the map<int, annotationInformation>
     pSet->annotationMutex->lock();
@@ -1261,7 +1454,7 @@ bool ConnectionObject::updateAnnotation(){
     return(true);  // even if the memory structure is not so good.. 
   }else{
     cerr << "couldn't update database or updated more than one row"
-	 << "                                        rows affected : " << conn.CmdTuples() << endl;
+	 << "                                        rows affected : " << cmdTuples << endl;
     return(false);
   }
   // I shouldn't be able to get here, but just in case..
@@ -1297,29 +1490,42 @@ void ConnectionObject::associateIshProbeWithEnsemblGene(){
   ostringstream insert;
   // then check do we actually have the privilege of associating genes with thingies.. not many people do
   // if we don't we really should send a message to the the guy in charge..
+  int lookup_error = 0;
   uquery << "select a.index from users a, user_privileges b where a.index = " << userId
 	 << " and a.index=b.user_index and b.privilege='modify_in_situ_probe_name'";
-  PgDatabase conn(conninfo);
-  if(!conn.Exec(uquery.str().c_str())){
-    cerr << "Couldn't execute query for checking privileges whilst trying to associate an ish probe with a gene" << endl
-	 << conn.ErrorMessage() << endl;
+  vector<vector<string> > lookup = dbLookup(uquery.str(), lookup_error);
+  if(!lookup.size()){
+    cerr << "It would appear that the user does not have sufficient privilege, or other db lookup error occured" << endl;
     return;
   }
-  if(!conn.Tuples()){
-    cerr << "it would appear that the user doesn't have privilegese to change stuff " << endl;
-    return;
-  }
+
+  // PgDatabase conn(conninfo);
+  // if(!conn.Exec(uquery.str().c_str())){
+  //   cerr << "Couldn't execute query for checking privileges whilst trying to associate an ish probe with a gene" << endl
+  // 	 << conn.ErrorMessage() << endl;
+  //   return;
+  // }
+  // if(!conn.Tuples()){
+  //   cerr << "it would appear that the user doesn't have privilegese to change stuff " << endl;
+  //   return;
+  // }
   // if we get here, I suppose that things are looking up...
+
   insert << "update in_situ_probes set ensembl_guess=" << ensemblGeneIndex << " where probe = " << probeIndex;
-  if(!conn.Exec(insert.str().c_str())){
-    cerr << "Couldn't update the table, am not sure why this should be the case, but returning nevertheless" << endl
-	 << conn.ErrorMessage() << endl;
+  if(!dbCommand(insert.str())){
+    cerr << "associateISHProbeWithGene: unable to update the table error unknown" << endl;
     return;
   }
-  if(!conn.CmdTuples()){
-    cerr << "Although the update statement would have seemed to be ok, no tuples affected, return with no action taken" << endl;
-    return;
-  }
+
+  // if(!conn.Exec(insert.str().c_str())){
+  //   cerr << "Couldn't update the table, am not sure why this should be the case, but returning nevertheless" << endl
+  // 	 << conn.ErrorMessage() << endl;
+  //   return;
+  // }
+  // if(!conn.CmdTuples()){
+  //   cerr << "Although the update statement would have seemed to be ok, no tuples affected, return with no action taken" << endl;
+  //   return;
+  // }
   /// and now, we want to change the internal data here, so we better do stuff..
   pSet->ishProbeDataMutex->lock();
   it = pSet->ishProbes.find(probeIndex);
@@ -1358,16 +1564,23 @@ void ConnectionObject::setIshProbeName(){
   ostringstream uquery;
   uquery << "select a.index from users a, user_privileges b where a.index = " << userId
 	 << " and a.index=b.user_index and b.privilege='modify_in_situ_probe_name'";
-  PgDatabase conn(conninfo);
-  if(!conn.Exec(uquery.str().c_str())){
-    cerr << "Couldn't execute query for checking privileges whilst trying to name an ish probe" << endl
-	 << conn.ErrorMessage() << endl;
-    return;
+  int lookup_error;
+  vector<vector<string> > lookup = dbLookup(uquery.str(), lookup_error);
+  if(!lookup.size()){
+      cerr << "setIshProbeName insufficient privilege or dbLookup error" << endl;
+      return;
   }
-  if(!conn.Tuples()){
-    cerr << "it would appear that the user doesn't have privilegese to name ish probes, by by .. " << endl;
-    return;
-  }
+    
+  // PgDatabase conn(conninfo);
+  // if(!conn.Exec(uquery.str().c_str())){
+  //   cerr << "Couldn't execute query for checking privileges whilst trying to name an ish probe" << endl
+  // 	 << conn.ErrorMessage() << endl;
+  //   return;
+  // }
+  // if(!conn.Tuples()){
+  //   cerr << "it would appear that the user doesn't have privilegese to name ish probes, by by .. " << endl;
+  //   return;
+  // }
   // and lets make a string for updating the table..
   ostringstream update;
   ////////////////////////////////  try to use the cleaning function from the pqsql.. have to check if it is available..
@@ -1379,15 +1592,19 @@ void ConnectionObject::setIshProbeName(){
 	 << "  charsWritten (escape string) " << charsWritten << endl;
   // and delete the string
   delete escapedString;
-  if(!conn.Exec(update.str().c_str())){
-    cerr << "couldn't update the name columne in the in situ probes table.. " << endl
-	 << conn.ErrorMessage() << endl;
-    return; 
-  }
-  if(!conn.CmdTuples()){
-    cerr << "Although the update statement was accepted, no row was affected hmmm " << endl;
+  if(!dbCommand(update.str())){
+    cerr << "setIshProbeName unable to update in_situ_probes. Error unknown" << endl;
     return;
   }
+  // if(!conn.Exec(update.str().c_str())){
+  //   cerr << "couldn't update the name columne in the in situ probes table.. " << endl
+  // 	 << conn.ErrorMessage() << endl;
+  //   return; 
+  // }
+  // if(!conn.CmdTuples()){
+  //   cerr << "Although the update statement was accepted, no row was affected hmmm " << endl;
+  //   return;
+  // }
   // now just update the internal data stuff here...  --
   pSet->ishProbeDataMutex->lock();
   it = pSet->ishProbes.find(probeId);
@@ -1442,48 +1659,55 @@ void ConnectionObject::insertIshProbeTextAnnotation(){
   //    and then insert.. -- and hopefully everything will be fine..
   ostringstream fieldCheck;
   fieldCheck << "select index from ish_annotation_text_fields where field = '" << escapedFName << "'";
-  PgDatabase conn(conninfo);
-  if(!conn.Exec(fieldCheck.str().c_str())){
-    cerr << "couldn't check the text annotation field name from the database return without inserting " << endl
-	 << conn.ErrorMessage() << endl;
+  //PgDatabase conn(conninfo);
+  int error_code = 0;
+  vector<vector<string> > field_index_t = dbLookup(fieldCheck.str(), error_code); // 
+  if(error_code){
+    //  if(!conn.Exec(fieldCheck.str().c_str())){
+    cerr << "couldn't check the text annotation field name from the database return without inserting " << endl;
     /// I should call some function that sends back the error message as well, but I will make that later..
     delete escapedFName;
     delete escapedAnnot;
     return;
   }
-  if(!conn.Tuples()){
+  if(!field_index_t.size()){
+    //  if(!conn.Tuples()){
     // we need to insert the field name..
     ostringstream fInsert;
     fInsert << "insert into ish_annotation_text_fields (field) values ('" << escapedFName << "')";
-    if(!conn.Exec(fInsert.str().c_str())){
-      cerr << "Couldn't insert the field name into the text annotation field value table.. bummer " << endl
-	   << conn.ErrorMessage() << endl;
+    if(!dbCommand(fInsert.str())){
+	//    if(!conn.Exec(fInsert.str().c_str())){
+      cerr << "Couldn't insert the field name into the text annotation field value table.. bummer " << endl;
+      //	   << conn.ErrorMessage() << endl;
       delete escapedFName;
       delete escapedAnnot;
       return;
     }
-    if(conn.CmdTuples() != 1){
-      cerr << "Although the insert would have appeared to been successful, it seems that it didnt' affect any rows.. very strange " << endl
-	   << "Number of rows affected : " << conn.CmdTuples() << endl;
-      delete escapedFName;
-      delete escapedAnnot;
-      return;
-    }
-    // unfortuanetely, I know have to try and see if I can get the index again..
-    if(!conn.Exec(fieldCheck.str().c_str())){
-      cerr << "-- after insertion.. couldn't check the text annotation field name from the database return without inserting " << endl
-	   << conn.ErrorMessage() << endl;
+    // if(conn.CmdTuples() != 1){
+    //   cerr << "Although the insert would have appeared to been successful, it seems that it didnt' affect any rows.. very strange " << endl
+    // 	   << "Number of rows affected : " << conn.CmdTuples() << endl;
+    //   delete escapedFName;
+    //   delete escapedAnnot;
+    //   return;
+    // }
+    // unfortuanetely, I now have to try and see if I can get the index again..
+    int lookup_error = 0;
+    field_index_t = dbLookup(fieldCheck.str(), lookup_error);
+    if(!field_index_t.size()){
+      //    if(!conn.Exec(fieldCheck.str().c_str())){
+      cerr << "-- after insertion.. couldn't check the text annotation field name from the database return without inserting " << endl;
+      //	   << conn.ErrorMessage() << endl;
       /// I should call some function that sends back the error message as well, but I will make that later..
       delete escapedFName;
       delete escapedAnnot;
       return;
     }
-    if(!conn.Tuples()){
-      cerr << "even I tried to insert it and it seems to have worked, something screwed up somewhere, return without doing anything " << endl;
-      delete escapedFName;
-      delete escapedAnnot;
-      return;
-    }
+    // if(!conn.Tuples()){
+    //   cerr << "even I tried to insert it and it seems to have worked, something screwed up somewhere, return without doing anything " << endl;
+    //   delete escapedFName;
+    //   delete escapedAnnot;
+    //   return;
+    // }
   }
   /// if I get here, conn.Tuples is something,, that's good.. and it would appear that I've inserted it into the database structure..
   /// that is nice.. maybe I need to change the pSet data set to indicate the changes... hmm. 
@@ -1495,7 +1719,8 @@ void ConnectionObject::insertIshProbeTextAnnotation(){
   pSet->ishProbeDataMutex->unlock();
   // -- easier than checking and things.. --- in the long run should check, and .. emit some signal if this happens..
   // -- but for now, leave it at this.. 
-  int fieldIndex = atoi(conn.GetValue(0, 0));
+  //  int fieldIndex = atoi(conn.GetValue(0, 0));
+  int fieldIndex = atoi(field_index_t[0][0].c_str());
   //cout << "The field Index for : " << escapedFName << "  is " << fieldIndex << endl;
   // we don't need the escapedFName any more as we will just use original string.. thingy..
   delete escapedFName;
@@ -1504,13 +1729,17 @@ void ConnectionObject::insertIshProbeTextAnnotation(){
   annotInsert << "insert into ish_probe_text_annotation (user_index, probe_id, field, annotation) values (" << userId << ", "
 	      << ishProbeId << ", " << fieldIndex << ", '" << escapedAnnot << "')";
   delete escapedAnnot;
-  if(!conn.Exec(annotInsert.str().c_str())){
-    cerr << "Bloody hell, couldn't insert the annot insert thingy,, byby, " << endl
-	 << conn.ErrorMessage() << endl;
+  Oid oid_value = 0;
+  int cmdTuples = dbCommand(annotInsert.str(), &oid_value);
+  if(!cmdTuples){
+    //  if(!conn.Exec(annotInsert.str().c_str())){
+    cerr << "Bloody hell, couldn't insert the annot insert thingy,, byby, " << endl;
+    //	 << conn.ErrorMessage() << endl;
     return;
   }
-  if(conn.CmdTuples() != 1){
-    cerr << "Conn Cmd Tuples is not 1,, but : " << conn.CmdTuples() << endl
+  if(cmdTuples != 1 || !oid_value){
+    //  if(conn.CmdTuples() != 1){
+    cerr << "Conn Cmd Tuples is not 1,, but : " << cmdTuples << endl
 	 << "what is going on " << endl;
     cerr << "the insert statement was : " << endl; // annotInsert.str() << endl;
     return;
@@ -1520,7 +1749,7 @@ void ConnectionObject::insertIshProbeTextAnnotation(){
   //int annotationId = (int)conn.OidValue();
 
   //cout << "and the OidStatus is : " << conn.OidStatus() << endl;
-  int annotationId = atoi(conn.OidStatus());
+  //int annotationId = atoi(conn.OidStatus());
   pSet->ishProbeDataMutex->lock();
   it = pSet->ishProbes.find(ishProbeId);
   if(it == pSet->ishProbes.end()){
@@ -1529,7 +1758,7 @@ void ConnectionObject::insertIshProbeTextAnnotation(){
     return;
   }
   /////////////// fix this,,, 
-  (*it).second.textAnnotation.insert(make_pair(annotationId, ish_annotation(annotationId, userId, currentUserName, words[4].latin1(), words[3].latin1())));
+  (*it).second.textAnnotation.insert(make_pair(oid_value, ish_annotation(oid_value, userId, currentUserName, words[4].latin1(), words[3].latin1())));
   pSet->ishProbeDataMutex->unlock();
   // and we are done... 
 }
@@ -1557,16 +1786,17 @@ void ConnectionObject::updateIshProbeTextAnnotation(){
   update << "update ish_probe_text_annotation set annotation ='" << escapedNote << "' where oid=" << oid 
 	 << " and user_index=" << userId;
   delete escapedNote;    // we don't actually need it anymore.. 
-  PgDatabase conn(conninfo);
-  if(!conn.Exec(update.str().c_str())){
-    cerr << "Coulnd't update the database table " << endl
-	 << conn.ErrorMessage() << endl;
-    //    delete escapedNote;
-    return;
-  }
-  if(conn.CmdTuples() != 1){
-    cerr << "Command Tuples is : " << conn.CmdTuples() << endl
-	 << conn.ErrorMessage() << endl;
+  //PgDatabase conn(conninfo);
+  int cmdTuples = dbCommand(update.str());
+  // if(!conn.Exec(update.str().c_str())){
+  //   cerr << "Coulnd't update the database table " << endl
+  // 	 << conn.ErrorMessage() << endl;
+  //   //    delete escapedNote;
+  //   return;
+  // }
+  if(cmdTuples != 1){
+    cerr << "Command Tuples is : " << cmdTuples << endl;
+      //	 << conn.ErrorMessage() << endl;
     return;
   }
   map<int, ishProbeData>::iterator it;
@@ -1619,55 +1849,67 @@ void ConnectionObject::insertIshProbeFloatAnnotation(){
   // then use to check if the fieldname is available..
   ostringstream fieldCheck;
   fieldCheck << "select index from ish_probe_num_fields where field = '" << escapedFName << "'";
-  PgDatabase conn(conninfo);
-  if(!conn.Exec(fieldCheck.str().c_str())){
+  int lookup_error;
+  vector<vector<string> > field_check_t = dbLookup(fieldCheck.str(), lookup_error);
+
+  //  PgDatabase conn(conninfo);
+  if(lookup_error){
+    //  if(!conn.Exec(fieldCheck.str().c_str())){
     cerr << "insertIshProbeFloatAnnotation couldn't select from annotation fields bugger " << endl;
     delete escapedFName;
     return;
   }
-  if(!conn.Tuples()){
+  if(!field_check_t.size()){
+    //  if(!conn.Tuples()){
     cerr << "new field. let's try to insert the field into the database.. ho yeaah " << endl;
     ostringstream insert;
     insert << "insert into ish_probe_num_fields (field) values ('" << escapedFName << "')";
-    if(!conn.Exec(insert.str().c_str())){
-      cerr << "couldn't insert the field name into the ish_probe_num_fields " << endl
-	   << conn.ErrorMessage() << endl;
+    int cmdTuples = dbCommand(insert.str());
+    if(!cmdTuples){
+      //    if(!conn.Exec(insert.str().c_str())){
+      cerr << "couldn't insert the field name into the ish_probe_num_fields " << endl; 
+      //	   << conn.ErrorMessage() << endl;
       // I really don't know what is going on here, but there you go... 
       delete escapedFName;
       return;
     }
     /// just try to select it using the original thingy..
-    if(!conn.Exec(fieldCheck.str().c_str())){
-      cerr << "insertIshProbeFloatAnnotation, can't select from the field table on second occasion.. " << endl
-	   << conn.ErrorMessage() << endl;
+    field_check_t = dbLookup(fieldCheck.str(), lookup_error);
+    if(!field_check_t.size()){  // no need to check for both errors and no rows
+      //    if(!conn.Exec(fieldCheck.str().c_str())){
+      cerr << "insertIshProbeFloatAnnotation, can't select from the field table on second occasion.. " << endl;
+      //	   << conn.ErrorMessage() << endl;
       delete escapedFName;
       return;
     }
-    if(!conn.Tuples()){
-      cerr << "although we tried to insert the field name we seem to have failed, not sure why error message : " << endl
-	   << conn.ErrorMessage() << endl;
-      delete escapedFName;
-      return;
-    }
+    // if(!conn.Tuples()){
+    //   cerr << "although we tried to insert the field name we seem to have failed, not sure why error message : " << endl
+    // 	   << conn.ErrorMessage() << endl;
+    //   delete escapedFName;
+    //   return;
+    // }
   }
   // if we get here, then we really should be able to get the field index from the bugger, and then we can delete the field name
   // and try to insert the actual classification thingy.. bugger...
-  int fieldIndex = atoi(conn.GetValue(0, 0));
+  //  int fieldIndex = atoi(conn.GetValue(0, 0));
+  int fieldIndex = atoi(field_check_t[0][0].c_str());
   delete escapedFName;
-  ostringstream insert;   // new context..
+  ostringstream insert;   // new context.
   insert << "insert into ish_probe_num_annotation (user_index, probe_id, field, annotation) values (" << userId << ", " 
 	 << ishProbeId << ", " << fieldIndex << ", " << value << ")";
-  if(!conn.Exec(insert.str().c_str())){
-    cerr << "couldn't insert into ish_probe_num_annotation " << endl
-	 << conn.ErrorMessage() << endl;
+  Oid oid_value;
+  int cmdTuples = dbCommand(insert.str(), &oid_value);
+  // if(!conn.Exec(insert.str().c_str())){
+  //   cerr << "couldn't insert into ish_probe_num_annotation " << endl
+  // 	 << conn.ErrorMessage() << endl;
+  //   return;
+  // }
+  if(cmdTuples != 1 || !oid_value){
+    cerr << "Although the insert was allowed nothing inserted due to some error " << endl;
+    //	 << conn.ErrorMessage();
     return;
   }
-  if(conn.CmdTuples() != 1){
-    cerr << "Although the insert was allowed nothing inserted due to some error " << endl
-	 << conn.ErrorMessage();
-    return;
-  }
-  int annotationId = atoi(conn.OidStatus());
+  //int annotationId = atoi(conn.OidStatus());
   // and at this point we can update the rest of the things..
   pSet->ishProbeDataMutex->lock();
   it = pSet->ishProbes.find(ishProbeId);
@@ -1676,7 +1918,7 @@ void ConnectionObject::insertIshProbeFloatAnnotation(){
     pSet->ishProbeDataMutex->unlock();
     return;
   }
-  (*it).second.numberAnnotation.insert(make_pair(annotationId, ish_annotation(annotationId, userId, currentUserName, value, words[3].latin1())));
+  (*it).second.numberAnnotation.insert(make_pair(oid_value, ish_annotation(oid_value, userId, currentUserName, value, words[3].latin1())));
   // and might as well just do an insert into the fields.. for the field name
   pSet->ishFloatFields.insert(words[3].latin1());   // it shares the same mutex for convenience..
   pSet->ishProbeDataMutex->unlock();
@@ -1717,54 +1959,67 @@ void ConnectionObject::insertIshProbeClassification(){
   // then use to check if the fieldname is available..
   ostringstream fieldCheck;
   fieldCheck << "select index from ish_probe_classes where class = '" << escapedFName << "'";
-  PgDatabase conn(conninfo);
-  if(!conn.Exec(fieldCheck.str().c_str())){
+  //PgDatabase conn(conninfo);
+  int nTuples = 0;
+  int lookup_error = 0;
+  vector<vector<string> > field_check_t = dbLookup(fieldCheck.str(), lookup_error);
+  if(lookup_error){
+    //  if(!conn.Exec(fieldCheck.str().c_str())){
     cerr << "insertIshProbeClassification couldn't select from class table..  bugger " << endl;
     delete escapedFName;
     return;
   }
-  if(!conn.Tuples()){
+  if(field_check_t.size()){
     cerr << "new class. let's try to insert the class into the database.. ho yeaah " << endl;
     ostringstream insert;
     insert << "insert into ish_probe_classes (class) values ('" << escapedFName << "')";
-    if(!conn.Exec(insert.str().c_str())){
-      cerr << "couldn't insert the class name into the ish_probe_classes " << endl
-	   << conn.ErrorMessage() << endl;
+    int cmdTuples = dbCommand(insert.str());
+    if(!cmdTuples){
+      //    if(!conn.Exec(insert.str().c_str())){
+      cerr << "couldn't insert the class name into the ish_probe_classes " << endl;
+      //	   << conn.ErrorMessage() << endl;
       // I really don't know what is going on here, but there you go... 
       delete escapedFName;
       return;
     }
     /// just try to select it using the original thingy..
-    if(!conn.Exec(fieldCheck.str().c_str())){
-      cerr << "insertIshProbeClassification, can't select from the field table on second occasion.. " << endl
-	   << conn.ErrorMessage() << endl;
-      delete escapedFName;
-      return;
-    }
-    if(!conn.Tuples()){
-      cerr << "although we tried to insert the class name we seem to have failed, not sure why error message : " << endl
-	   << conn.ErrorMessage() << endl;
+    field_check_t = dbLookup(fieldCheck.str(), lookup_error);
+    // if(!conn.Exec(fieldCheck.str().c_str())){
+    //   cerr << "insertIshProbeClassification, can't select from the field table on second occasion.. " << endl
+    // 	   << conn.ErrorMessage() << endl;
+    //   delete escapedFName;
+    //   return;
+    // }
+    if(!field_check_t.size()){
+      //    if(!conn.Tuples()){
+      cerr << "although we tried to insert the class name we seem to have failed, not sure why error message : " << endl;
+      //	   << conn.ErrorMessage() << endl;
       delete escapedFName;
       return;
     }
   }
   /// everything should be OK.. 
-  int fieldIndex = atoi(conn.GetValue(0, 0));
+  //  int fieldIndex = atoi(conn.GetValue(0, 0));
+  int fieldIndex = atoi(field_check_t[0][0].c_str());
   delete escapedFName;
   ostringstream insert;   // new context..
   insert << "insert into ish_probe_classification (user_index, probe_id, class, confidence) values (" << userId << ", " 
 	 << ishProbeId << ", " << fieldIndex << ", " << value << ")";
-  if(!conn.Exec(insert.str().c_str())){
-    cerr << "couldn't insert into ish_probe_num_annotation " << endl
-	 << conn.ErrorMessage() << endl;
+  Oid oid_value = 0;
+  int cmdTuples = dbCommand(insert.str(), &oid_value);
+  
+  // if(!conn.Exec(insert.str().c_str())){
+  //   cerr << "couldn't insert into ish_probe_num_annotation " << endl
+  // 	 << conn.ErrorMessage() << endl;
+  //   return;
+  // }
+  if(cmdTuples != 1){
+    //  if(conn.CmdTuples() != 1){
+    cerr << "Although the insert was allowed nothing inserted due to some error " << endl;
+    //	 << conn.ErrorMessage();
     return;
   }
-  if(conn.CmdTuples() != 1){
-    cerr << "Although the insert was allowed nothing inserted due to some error " << endl
-	 << conn.ErrorMessage();
-    return;
-  }
-  int annotationId = atoi(conn.OidStatus());
+  //  int annotationId = atoi(conn.OidStatus());
   // ok evertying should be fine.. 
   pSet->ishProbeDataMutex->lock();
   it = pSet->ishProbes.find(ishProbeId);
@@ -1773,7 +2028,7 @@ void ConnectionObject::insertIshProbeClassification(){
     pSet->ishProbeDataMutex->unlock();
     return;
   }
-  (*it).second.classification.insert(make_pair(annotationId, ish_annotation(annotationId, userId, currentUserName, value, words[3].latin1())));
+  (*it).second.classification.insert(make_pair(oid_value, ish_annotation(oid_value, userId, currentUserName, value, words[3].latin1())));
   // and might as well just do an insert into the fields.. for the field name
   pSet->ishClasses.insert(words[3].latin1());   // it shares the same mutex for convenience..
   pSet->ishProbeDataMutex->unlock();
@@ -1790,66 +2045,83 @@ void ConnectionObject::sendSessionInformation(){
   cout << "sendSessionInformation function. " << endl;
 
   map<int, sessionData> sData;    // hope this will work ok with threads.. Hmm. who knows..
-  PgDatabase conn(conninfo);
-  if(!conn.Exec("begin")){ 
-    cerr << "couldn't begin " << endl;
-    return; 
-  }
-  if(!conn.Exec("set transaction isolation level serializable")) { 
-    cerr << "Couldn't set transcation isolation level " << endl;
-    return; 
-  }
-  if(!conn.Exec("select index, user_id, title, description from sessions")){
-    cerr << "Couldn't select from sessions " << endl;
-    cerr << conn.ErrorMessage() << endl;
-    return; 
-  }
-  for(int i=0; i < conn.Tuples(); i++){
+  // PgDatabase conn(conninfo);
+  // if(!conn.Exec("begin")){ 
+  //   cerr << "couldn't begin " << endl;
+  //   return; 
+  // }
+  // if(!conn.Exec("set transaction isolation level serializable")) { 
+  //   cerr << "Couldn't set transcation isolation level " << endl;
+  //   return; 
+  // }
+  // if(!conn.Exec("select index, user_id, title, description from sessions")){
+  //   cerr << "Couldn't select from sessions " << endl;
+  //   cerr << conn.ErrorMessage() << endl;
+  //   return; 
+  // }
+  string query = "select index, user_id, title, description from sessions";
+  int lookup_error = 0;
+  vector<vector<string> > session_data = dbLookup(query, lookup_error);
+  //  for(int i=0; i < conn.Tuples(); i++){
+  for(int i=0; i < session_data.size(); i++){
     sessionData tData;
-    tData.sessionIndex = atoi(conn.GetValue(i, 0));
-    tData.userId = atoi(conn.GetValue(i, 1));
-    tData.sessionTitle = conn.GetValue(i, 2);
-    tData.description = conn.GetValue(i, 3);
+    //    tData.sessionIndex = atoi(conn.GetValue(i, 0));
+    tData.sessionIndex = atoi(session_data[i][0].c_str());
+    //    tData.userId = atoi(conn.GetValue(i, 1));
+    tData.userId = atoi(session_data[i][1].c_str());
+    //    tData.sessionTitle = conn.GetValue(i, 2);
+    tData.sessionTitle = session_data[i][2];
+    //    tData.description = conn.GetValue(i, 3);
+    tData.description = session_data[i][3];
     sData.insert(make_pair(tData.sessionIndex, tData));
   }
   // and lets get the keywords..
-  if(!conn.Exec("select a.index, b.keyword from sessions a, session_keywords b where a.index=b.index order by a.index")){
-    cerr << "couldn't select from keywords table " << endl;
-    return; 
-  }
+  query = "select a.index, b.keyword from sessions a, session_keywords b where a.index=b.index order by a.index";
+  vector<vector<string> > keyword_t = dbLookup(query, lookup_error);
+  // if(!conn.Exec("select a.index, b.keyword from sessions a, session_keywords b where a.index=b.index order by a.index")){
+  //   cerr << "couldn't select from keywords table " << endl;
+  //   return; 
+  // }
   map<int, sessionData>::iterator it;
   int oldSession = -1; // should be impossible.. 
-  for(int i=0; i < conn.Tuples(); i++){
-    int session = atoi(conn.GetValue(i, 0));
+  for(uint i=0; i < keyword_t.size(); ++i){
+    //  for(int i=0; i < conn.Tuples(); i++){
+    int session = atoi(keyword_t[i][0].c_str());
+    //    int session = atoi(conn.GetValue(i, 0));
     if(session != oldSession){
       oldSession = session;
       it = sData.find(session);
     }
     if(it != sData.end()){
-      (*it).second.keyWords.insert(conn.GetValue(i, 1));
+      //      (*it).second.keyWords.insert(conn.GetValue(i, 1));
+      (*it).second.keyWords.insert(keyword_t[i][1]);
     }
   }
   // and then lets get the words,, in a a very similar way..
-  if(!conn.Exec("select distinct a.session_id, b.gene from user_annotation a, user_annotation_genes b where a.index=b.annotation_id and a.session_id > 0")){
-    cerr << "couldn't select from user_annotation_genes table.. " << endl;
-    return;
-  }
+  query = "select distinct a.session_id, b.gene from user_annotation a, user_annotation_genes b where a.index=b.annotation_id and a.session_id > 0";
+  vector<vector<string> > session_info_t = dbLookup(query, lookup_error);
+  // if(!conn.Exec("select distinct a.session_id, b.gene from user_annotation a, user_annotation_genes b where a.index=b.annotation_id and a.session_id > 0")){
+  //   cerr << "couldn't select from user_annotation_genes table.. " << endl;
+  //   return;
+  // }
   oldSession = -1;   // again..
-  for(int i=0; i < conn.Tuples(); i++){
-    int session = atoi(conn.GetValue(i, 0));
+  for(uint i=0; i < session_info_t.size(); i++){
+    //  for(int i=0; i < conn.Tuples(); i++){
+    int session = atoi(session_info_t[i][0].c_str()); // atoi(conn.GetValue(i, 0));
     if(session != oldSession){
       oldSession = session;
       it = sData.find(session);
     }
     if(it != sData.end()){
-      (*it).second.geneIds.insert(atoi(conn.GetValue(i, 1)));
+      (*it).second.geneIds.insert(atoi(session_info_t[i][1].c_str()));
+      //      (*it).second.geneIds.insert(atoi(conn.GetValue(i, 1)));
     }
   }
   // at which point we've got all of the data and we can commit the cursor and send it to the local client.. 
-  if(!conn.Exec("commit")){ 
-    cerr << "couldn't commit for some obscure reason " << endl;
-    return; 
-  }
+  // if(!conn.Exec("commit")){ 
+  //   cerr << "couldn't commit for some obscure reason " << endl;
+  //   return; 
+  // }
   // and then lets do some appending.. !!
   sApp("<sessionDescription>");
   qiApp(sData.size());
@@ -1902,21 +2174,29 @@ void ConnectionObject::sendProbeSetSequence(){
   string request = string("select a.sequence, a.af_id from seq a, p_sets b where a.af_id=b.af_id and b.index =") + words[0].latin1();  // shopuld beOK
   // do a database lookup to get the sequence and then write this along with things..
   //const char* conninfo = "dbname=expression";
-  PgCursor conn(conninfo, "portal");
-  if(!conn.Declare(request.c_str())){
-    cerr << "couldn't declare the probe set sequence request " << endl;
+  // PgCursor conn(conninfo, "portal");
+  // if(!conn.Declare(request.c_str())){
+  //   cerr << "couldn't declare the probe set sequence request " << endl;
+  //   return;
+  // }
+  // if(!conn.Fetch()){
+  //   cerr << "couldn't fetch the data,, don't know what's going on " << endl;
+  //   return;
+  // }
+  // if(conn.Tuples() != 1){
+  //   cerr << "conn.tuples isn't 1. returning without doing anything, but should do this differently" << endl;
+  //   return;
+  // }
+
+  int lookup_error = 0;
+  vector<vector<string> > lookup_t = dbLookup(request, lookup_error);
+  if(!lookup_t.size()){
+    cerr << "sendProbeSequence unable to get sequence for probe with index " << words[0].latin1() << endl;
     return;
   }
-  if(!conn.Fetch()){
-    cerr << "couldn't fetch the data,, don't know what's going on " << endl;
-    return;
-  }
-  if(conn.Tuples() != 1){
-    cerr << "conn.tuples isn't 1. returning without doing anything, but should do this differently" << endl;
-    return;
-  }
-  string sequence = conn.GetValue(0, 0);  // there is only one !!
-  string afid = conn.GetValue(0, 1);
+
+  string sequence = lookup_t[0][0]; //conn.GetValue(0, 0);  // there is only one !!
+  string afid = lookup_t[0][1]; // conn.GetValue(0, 1);
   // and write the message and get out of here..
   sApp("<dnaSequence>");
   qiApp(requestId);
@@ -1953,25 +2233,33 @@ void ConnectionObject::sendEnsemblPeptide(){
   //	      << "where a.index = b.index and a.gene=" << geneIndex;
   queryString << "select a.id, b.id, a.sequence from ensembl_peptide_9 a, ensembl_transcript_9 b "
 	      << "where a.transcript=b.transcript and a.transcript = " << transcriptIndex;
-  PgCursor conn(conninfo, "portal");
-  if(!conn.Declare(queryString.str().c_str())){
-    cerr << "couldn't declare the query for the peptide sequence" << endl;
+  // PgCursor conn(conninfo, "portal");
+  // if(!conn.Declare(queryString.str().c_str())){
+  //   cerr << "couldn't declare the query for the peptide sequence" << endl;
+  //   return;
+  // }
+  // if(!conn.Fetch()){
+  //   cerr << "coulnd't fetch peptide sequences from database " << endl;
+  //   return;
+  // }
+
+  int lookup_error = 0;
+  vector<vector<string> > lookup = dbLookup(queryString.str(), lookup_error);
+  if(lookup_error){
+    cerr << "sendEnsemblPeptide Database lookup error" << endl;
     return;
   }
-  if(!conn.Fetch()){
-    cerr << "coulnd't fetch peptide sequences from database " << endl;
-    return;
-  }
+
   sApp("<dnaSequence>");
   qiApp(requestId);
   qiApp(4);  // peptide sequence 
-  int tuples = conn.Tuples();
+  //int tuples = conn.Tuples();
   qiApp(transcriptIndex);
-  qiApp(tuples);  // so I know how many..
-  for(int i=0; i < tuples; i++){
-    sApp(conn.GetValue(i, 0));
-    qiApp(atoi(conn.GetValue(i, 1)));
-    sApp(conn.GetValue(i, 2));
+  qiApp(lookup.size()); // tuples);  // so I know how many..
+  for(int i=0; i < lookup.size(); i++){
+    sApp(lookup[i][0]); //conn.GetValue(i, 0));
+    qiApp(atoi(lookup[i][1].c_str())); //atoi(conn.GetValue(i, 1)));
+    sApp(lookup[i][2]); // conn.GetValue(i, 2));
   }
   sApp("<dnaSequenceEnd>");
   writeArray();
@@ -2007,32 +2295,40 @@ void ConnectionObject::sendEnsemblTranscriptSequence(){
   // Ok, that should be it, now get the usual suspect connection to the database..
   // maybe one day keep one connection instead of making new ones each time.. oh well.. when I'm old and wise.
   //const char* conninfo = "dbname=expression";
-  PgCursor conn(conninfo, "portal");
-  if(!conn.Declare(queryString.str().c_str())){
-    cerr << "Couldn't declare the cursor for the transcript query thing.. never mind " << endl;
+  // PgCursor conn(conninfo, "portal");
+  // if(!conn.Declare(queryString.str().c_str())){
+  //   cerr << "Couldn't declare the cursor for the transcript query thing.. never mind " << endl;
+  //   return;
+  // }
+  // if(!conn.Fetch()){
+  //   cerr << "Couldn't fetcht the data for transcript query thing, bugger " << endl;
+  //   return;
+  // }
+  // int tuples = conn.Tuples();
+  // if(tuples == 0){
+  //   cerr << "query didn't retrieve anythying. That sucks, " << endl;
+  //   //return;
+  // }
+
+  int lookup_error = 0;
+  vector<vector<string> > lookup = dbLookup(queryString.str(), lookup_error);
+  if(lookup_error){
+    cerr << "sendEnsemblTranscriptSequence database lookup error : " << lookup_error << endl;
     return;
   }
-  if(!conn.Fetch()){
-    cerr << "Couldn't fetcht the data for transcript query thing, bugger " << endl;
-    return;
-  }
-  int tuples = conn.Tuples();
-  if(tuples == 0){
-    cerr << "query didn't retrieve anythying. That sucks, " << endl;
-    //return;
-  }
+
   // ok do this the dangerous way..
   sApp("<dnaSequence>");
   qiApp(requestId);
   qiApp(1);    // sequence type..
   qiApp(index);  // just to remind the client, what it might be looking for. 
-  qiApp(tuples);  // number of sequences.. 
-  for(int i=0; i < tuples; i++){
-    sApp(conn.GetValue(i, 0));
-    sApp(conn.GetValue(i, 1));
-    qiApp(atoi(conn.GetValue(i, 2)));
-    sApp(conn.GetValue(i, 4));  // the strand
-    sApp(conn.GetValue(i, 3)); // the sequence .. 
+  qiApp(lookup.size());  // number of sequences.. 
+  for(uint i=0; i < lookup.size(); i++){
+    sApp(lookup[i][0]); //conn.GetValue(i, 0));
+    sApp(lookup[i][1]); // conn.GetValue(i, 1));
+    qiApp(atoi(lookup[i][2].c_str())); // conn.GetValue(i, 2)));
+    sApp(lookup[i][4]); //  conn.GetValue(i, 4));  // the strand
+    sApp(lookup[i][3]); // conn.GetValue(i, 3)); // the sequence .. 
   }
   sApp("<dnaSequenceEnd>");
   writeArray();
@@ -2211,26 +2507,27 @@ void ConnectionObject::doDBLookup(){
   //cout << "Full Query is : " << fullQuery.latin1() << endl;
   // and now get a database connection..
   //PgCursor conn(conninfo, "portal");
-  PgDatabase conn(conninfo);
-  if(conn.ConnectionBad()){
-    cerr << "connection not good" << endl;
-    return;
-  }
-  if(!conn.Exec(fullQuery.latin1())){
-    cerr << "command didn't work: " << fullQuery << endl;
-    return;
-  }
-  //if(!conn.Fetch()){
-  // cerr << "couldn't fetch the data" << endl;
-  // return;
-  //}
-  int tuples = conn.Tuples();
+
+  // PgDatabase conn(conninfo);
+  // if(conn.ConnectionBad()){
+  //   cerr << "connection not good" << endl;
+  //   return;
+  // }
+  // if(!conn.Exec(fullQuery.latin1())){
+  //   cerr << "command didn't work: " << fullQuery << endl;
+  //   return;
+  // }
+
+  int lookup_error = 0;
+  vector<vector<string> > query_t = dbLookup(fullQuery.latin1(), lookup_error);
+
+  //  int tuples = conn.Tuples();
   uint pIndex;  
   pair< multimap<int, int>::iterator, multimap<int, int>::iterator > range;
   vector<int> index;
-  index.reserve(tuples);
-  for(int i=0; i < tuples; i++){
-    pIndex = atoi(conn.GetValue(i, 0));
+  index.reserve(query_t.size());
+  for(uint i=0; i < query_t.size(); i++){
+    pIndex = atoi(query_t[i][0].c_str()); //      conn.GetValue(i, 0));
     if(mode !=1){  
       if(pIndex <= pSet->data.size()){
 	index.push_back(pIndex);   
@@ -2318,21 +2615,25 @@ void ConnectionObject::doGenDBLookup(){
   list<RegionSpecification>::iterator it;
   list<RegionSpecification>::iterator current;     // the one we are checking.. 
   list<RegionSpecification>::iterator pit;    // need two so we can safely erase elements while traversing the thingy.. complicated.. 
-  PgDatabase conn(conninfo);
-  if(conn.ConnectionBad()){
-    cerr << "connection not good" << endl;
-    return;
-  }
-  //cout << "Query " << endl << query << endl;
-  if(!conn.Exec(query.latin1())){
-    cerr << "command didn't work: " << query << endl;
-    return;
-  }
-  int tuples = conn.Tuples();
-  for(int i=0; i < tuples; i++){
-    int begin = atoi(conn.GetValue(i, 1));
-    int end = atoi(conn.GetValue(i, 2));
-    int strand = atoi(conn.GetValue(i, 3));
+  // PgDatabase conn(conninfo);
+  // if(conn.ConnectionBad()){
+  //   cerr << "connection not good" << endl;
+  //   return;
+  // }
+  // //cout << "Query " << endl << query << endl;
+  // if(!conn.Exec(query.latin1())){
+  //   cerr << "command didn't work: " << query << endl;
+  //   return;
+  // }
+  //  int tuples = conn.Tuples();
+  
+  int lookup_error = 0;
+  vector<vector<string> > gen_locations_t = dbLookup(query.latin1(), lookup_error);
+
+  for(int i=0; i < gen_locations_t.size(); i++){
+    int begin = atoi(gen_locations_t[i][1].c_str()); // conn.GetValue(i, 1));
+    int end = atoi(gen_locations_t[i][2].c_str()); // conn.GetValue(i, 2));
+    int strand = atoi(gen_locations_t[i][3].c_str()); //conn.GetValue(i, 3));
     if(strand == 1){
       begin -= upMargin;
       end += downMargin;
@@ -2341,7 +2642,7 @@ void ConnectionObject::doGenDBLookup(){
       end += upMargin;
     }
     if(begin < 0){ begin = 1; }   // no negative numbers... 
-    specList.push_back(RegionSpecification(conn.GetValue(i, 0), begin, end));
+    specList.push_back(RegionSpecification(gen_locations_t[i][0], begin, end));
     //cout << "Making speclist with chromosome : " << conn.GetValue(i, 0) << "  start : " << begin << "\tend : " << end << endl;
   }
   /// and then for the clever bit.. well, maybe not that clever..
@@ -2762,7 +3063,7 @@ void ConnectionObject::zScore(float* v, int s){  //s for the size..
 }
 
 void ConnectionObject::stdDeviation(float* v, uint s, float& mean, float& std, bool sampling){
-  if(s < 2 && sampling || s < 1){
+  if((s < 2 && sampling) || s < 1){
     return;                       // can't do this..
   }
   std = 0;
@@ -3649,11 +3950,21 @@ void ConnectionObject::sendIshThumbnails(){
 	 << conn.ErrorMessage() << endl;
     return;
   }
+
+  int lookup_error = 0;
+  vector<vector<string> > tn_data = dbLookup(query.str(), lookup_error);
+  if(!tn_data.size() || lookup_error){
+    cerr << "sendIshThumbnails unable to get database lookup" << endl;
+    return;
+  }
   // send these probe data first so that the client can put some appropriate labels on the things.. 
-  sendIshProbeData(index);     
-  for(int i=0; i < conn.Tuples(); i++){
+  sendIshProbeData(index);
+  for(uint i=0; i < tn_data.size(); i++){
+    //  for(int i=0; i < conn.Tuples(); i++){
     //cout << "Sending an Image using the sendIshThumbnail function " << endl;
-    sendIshThumbnail(index, atoi(conn.GetValue(i, 0)), atoi(conn.GetValue(i, 1))  );
+    sendIshThumbnail(index, atoi(tn_data[i][0].c_str()), atoi(tn_data[i][1].c_str())  );
+    //    sendIshThumbnail(index, atoi(conn.GetValue(i, 0)), atoi(conn.GetValue(i, 1))  );
+
     //// note by doing this in a seperate function we are forced to create a new large object connection to the database for each 
     //// thumbnail image. This is probably slower than creating one, and then using this one large object by opening and closing..
     ///  the objects. However, should we have some sort of corrupted object and we don't recover correctly, then we may have an easier time
@@ -3935,24 +4246,30 @@ void ConnectionObject::sendExperiments(){
 }
 
 void ConnectionObject::sendTissues(){
-  PgDatabase conn(conninfo);
-  if(conn.ConnectionBad()){
-    cerr << "sendTissues connection is bad " << endl;
-    return;
-  }
+  // PgDatabase conn(conninfo);
+  // if(conn.ConnectionBad()){
+  //   cerr << "sendTissues connection is bad " << endl;
+  //   return;
+  // }
   ostringstream query;
   query << "select * from ish_tissue";
-  if(!conn.Exec(query.str().c_str())){
-    cerr << "sendTissues couldn't do query " << endl
-	 << conn.ErrorMessage();
+  // if(!conn.Exec(query.str().c_str())){
+  //   cerr << "sendTissues couldn't do query " << endl
+  // 	 << conn.ErrorMessage();
+  //   return;
+  // }
+  int lookup_error = 0;
+  vector<vector<string> > t_data = dbLookup(query.str(), lookup_error);
+  if(lookup_error || !t_data.size()){
+    cerr << "sendTissues problem obtaining data from database" << endl;
     return;
   }
   sApp("<Tissues>");
-  qiApp(conn.Tuples());
-  for(int i=0; i < conn.Tuples(); i++){
-    qiApp(atoi(conn.GetValue(i, 0)));
-    sApp(conn.GetValue(i, 1));
-    fApp(atof(conn.GetValue(i, 2)));
+  qiApp(t_data.size()); // conn.Tuples());
+  for(uint i=0; i < t_data.size(); i++){
+    qiApp(atoi(t_data[i][0].c_str())); // (i, 0)));
+    sApp(t_data[i][1]); //conn.GetValue(i, 1));
+    fApp(atof(t_data[i][2].c_str())); // conn.GetValue(i, 2)));
   }
   sApp("<TissuesEnd>");
   writeArray();
@@ -3961,7 +4278,7 @@ void ConnectionObject::sendTissues(){
 void ConnectionObject::sendIshAnnotationFields(){
   PgDatabase conn(conninfo);
   if(conn.ConnectionBad()){
-    cerr << "sendTissues connection is bad " << endl;
+    cerr << "sendIshAnnotation connection is bad " << endl;
     return;
   }
   const char* query = "select * from ish_annotation_fields";
@@ -3969,11 +4286,17 @@ void ConnectionObject::sendIshAnnotationFields(){
     cerr << "coudn't execute ish annotation field query " << endl;
     return;
   }
+  int lookup_error = 0;
+  vector<vector<string> > fields_data = dbLookup(query, lookup_error);
+  if(!fields_data.size() || lookup_error){
+    cerr << "sendIshAnnotationFields unable to get data from database" << endl;
+    return;
+  }
   sApp("<IshAnnotationFields>");
-  qiApp(conn.Tuples());
-  for(int i=0; i < conn.Tuples(); i++){
-    qiApp(atoi(conn.GetValue(i, 0)));
-    sApp(conn.GetValue(i, 1));
+  qiApp(fields_data.size());
+  for(uint i=0; i < fields_data.size(); i++){
+    qiApp(atoi(fields_data[i][0].c_str())); //conn.GetValue(i, 0)));
+    sApp(fields_data[i][1]); //conn.GetValue(i, 1));
   }
   sApp("<IshAnnotationFieldsEnd>");
 writeArray();
@@ -3994,20 +4317,25 @@ void ConnectionObject::makeIshTissue(){
   char* cleanTissue = new char[words[0].length() * 2 + 1];
   PQescapeString(cleanTissue, words[0].latin1(), words[0].length());
   // make a connection to the database backend..
-  PgDatabase conn(conninfo);
-  if(conn.ConnectionBad()){
-    cerr << "makeIshTissue, db connection bad" << endl;
-    return;
-  }
+  // PgDatabase conn(conninfo);
+  // if(conn.ConnectionBad()){
+  //   cerr << "makeIshTissue, db connection bad" << endl;
+  //   return;
+  // }
   ostringstream entry;
   entry << "insert into ish_tissue (name, age) values ('" << cleanTissue << "', " << age << ")";
   cout << "MakeTissue : " << entry.str() << endl;
   delete cleanTissue;
-  if(!conn.Exec(entry.str().c_str())){
-    cerr << "makeTissue couldn't enter into database, bugger : " << endl
-	 << conn.ErrorMessage() << endl;
-    return;
+  // if(!conn.Exec(entry.str().c_str())){
+  //   cerr << "makeTissue couldn't enter into database, bugger : " << endl
+  // 	 << conn.ErrorMessage() << endl;
+  //   return;
+  // }
+
+  if(!dbCommand(entry.str())){
+    cerr << "makeTissue unabel to enter into the database" << endl;
   }
+  
   // rather than checking let's just force an update by calling sendTissues..
   sendTissues();
 }
@@ -4020,16 +4348,19 @@ void ConnectionObject::makeIshAnnotationField(){
   entry << "insert into ish_annotation_fields (field_name) values ('" << field << "')";
   cout << "makeIshAnnotatinField : " << entry.str() << endl;
   delete field;
-  PgDatabase conn(conninfo);
-  if(conn.ConnectionBad()){
-    cerr << "makeIshAnnotationField couldn't connect to database : " << endl;
+  // PgDatabase conn(conninfo);
+  // if(conn.ConnectionBad()){
+  //   cerr << "makeIshAnnotationField couldn't connect to database : " << endl;
+  //   return;
+  // }
+  // if(!conn.Exec(entry.str().c_str())){
+  //   cerr << "MakeIshAnnotationField couldn't enter field " << endl
+  // 	 << conn.ErrorMessage() << endl;
+  //   return;
+  // }
+  int cmdTuples = dbCommand(entry.str());
+  if(!cmdTuples)
     return;
-  }
-  if(!conn.Exec(entry.str().c_str())){
-    cerr << "MakeIshAnnotationField couldn't enter field " << endl
-	 << conn.ErrorMessage() << endl;
-    return;
-  }
   sendIshAnnotationFields();
 }
     
@@ -4173,54 +4504,68 @@ void ConnectionObject::commitIshImageToDB(){
   //cout << "Got the data for the thumb " << thumbSize << "  bytes " << endl
   //    << "And got the main image data " << imageSize << "  bytes " << endl;
 
+  ////////////// Replaced following section with calls to storeLargeObject
   /// and now we have to get some pqlargeobjects and work out how to use them.. 
-  PgLargeObject imageObject(conninfo);
-  PgLargeObject thumbObject(conninfo);
-  if(imageObject.ConnectionBad()){
-    cerr << "couldn't make large object connection " << endl;
-    delete []imageData;
-    delete []thumbData;
-    delete []sizeInfo;
-    status.ok = false;
-    status.errorMessages.push_back("Couldn't create a large object connection");
-    writeStatus(status);
-    return;
-  }
-  imageObject.Exec("begin");
-  thumbObject.Exec("begin");
-  cerr << "After exec begin error Message : " << imageObject.ErrorMessage() << endl;
+  // PgLargeObject imageObject(conninfo);
+  // PgLargeObject thumbObject(conninfo);
+  // if(imageObject.ConnectionBad()){
+  //   cerr << "couldn't make large object connection " << endl;
+  //   delete []imageData;
+  //   delete []thumbData;
+  //   delete []sizeInfo;
+  //   status.ok = false;
+  //   status.errorMessages.push_back("Couldn't create a large object connection");
+  //   writeStatus(status);
+  //   return;
+  // }
+  // imageObject.Exec("begin");
+  // thumbObject.Exec("begin");
+  // cerr << "After exec begin error Message : " << imageObject.ErrorMessage() << endl;
   
-  // cout << "now the image object has an oid of : " << imageObject.LOid() << endl;
-  // create an object ..
-  imageObject.Create();
-  Oid imageOid = imageObject.LOid();
-  //cout << "created and now the imageOid  is " << imageOid << endl;
-  //cerr << "after checking the oid error Message : " << imageObject.ErrorMessage() << endl;
+  // // cout << "now the image object has an oid of : " << imageObject.LOid() << endl;
+  // // create an object ..
+  // imageObject.Create();
+  // Oid imageOid = imageObject.LOid();
+  // //cout << "created and now the imageOid  is " << imageOid << endl;
+  // //cerr << "after checking the oid error Message : " << imageObject.ErrorMessage() << endl;
 
-  imageObject.Open();        // does what .. 
-  int imageWritten = imageObject.Write(imageData, imageSize);
-  cerr << "after writing the first time .. error Message : " << imageObject.ErrorMessage() << endl;
+  // imageObject.Open();        // does what .. 
+  // int imageWritten = imageObject.Write(imageData, imageSize);
+  // cerr << "after writing the first time .. error Message : " << imageObject.ErrorMessage() << endl;
 
-  // then create and write the data to the other thingy.. 
-  thumbObject.Create();
-  thumbObject.Open();      // ?? 
-  Oid thumbOid = thumbObject.LOid();
-  //cout << "created and now the imageOid  is " << imageOid << endl;
-  int thumbWritten = thumbObject.Write(thumbData, thumbSize);
+  // // then create and write the data to the other thingy.. 
+  // thumbObject.Create();
+  // thumbObject.Open();      // ?? 
+  // Oid thumbOid = thumbObject.LOid();
+  // //cout << "created and now the imageOid  is " << imageOid << endl;
+  // int thumbWritten = thumbObject.Write(thumbData, thumbSize);
 
-  delete []imageData;
-  delete []thumbData;
-  delete []sizeInfo;
-  if(thumbWritten != thumbSize || imageWritten != imageSize){
-    cerr << "It seems that we didn't write enough for the large objects bugger " << endl;
-    cerr << "imageWritten is : " << imageWritten << endl
-	 << "thumbWritten is : " << thumbWritten << endl;
-    cerr << "error Message : " << imageObject.ErrorMessage() << endl;
-    status.ok = false;
-    status.errorMessages.push_back("Problems writing the image data into the database");
+  // delete []imageData;
+  // delete []thumbData;
+  // delete []sizeInfo;
+  // if(thumbWritten != thumbSize || imageWritten != imageSize){
+  //   cerr << "It seems that we didn't write enough for the large objects bugger " << endl;
+  //   cerr << "imageWritten is : " << imageWritten << endl
+  // 	 << "thumbWritten is : " << thumbWritten << endl;
+  //   cerr << "error Message : " << imageObject.ErrorMessage() << endl;
+  //   status.ok = false;
+  //   status.errorMessages.push_back("Problems writing the image data into the database");
+  //   writeStatus(status);
+  //   return;
+  // }
+  //
+  // Replaced above with calls to storeLargeObject
+  Oid imageOid = storeLargeObject(imageData, imageSize);
+  Oid thumbOid = storeLargeObject(thumbData, thumbSize);
+
+  if(!imageOid || !thumbOid){
+    cerr << "Failed to write either thumbnail or image to a large object file\n"
+	 << "image oid: " << imageOid << " thumbOid " << thumbOid << endl;
+    status.errorMessages.push_back("Unable to create imageOid or thumbOid");
     writeStatus(status);
     return;
   }
+
   ostringstream entry;    // now we need to make an entry for the table..
   char* cleanFile = new char[fileName.length()*2 + 1];
   PQescapeString(cleanFile, fileName.latin1(), fileName.length());
@@ -4231,57 +4576,81 @@ void ConnectionObject::commitIshImageToDB(){
 	<< imageOid << ", " << thumbOid << ", " << probeId << ", " << experimentId << ", " << userId << ")";
   delete cleanFile;
   delete cleanProm;
-  if(imageObject.ExecCommandOk(entry.str().c_str()) != 1){
-    cerr << "couln't enter the stuff into the ish images table " << endl; 
+  // if(imageObject.ExecCommandOk(entry.str().c_str()) != 1){
+  //   cerr << "couln't enter the stuff into the ish images table " << endl; 
+  //   status.ok = false;
+  //   status.errorMessages.push_back("Couldn't enter data into the ish images table");
+  //   writeStatus(status);
+  //   return;
+  // }
+  
+  if(!dbCommand(entry.str())){
+    cerr << "large objects created, but unable to enter identifiers into table" << endl;
     status.ok = false;
-    status.errorMessages.push_back("Couldn't enter data into the ish images table");
+    status.errorMessages.push_back("Unabble to enter large object identifiers into ish_images");
     writeStatus(status);
     return;
   }
+  
+
   //if(imageObject.Tuples() != 1){
   // cerr << "tuples number is wrong... should be 1 but is " << imageObject.Tuples() << endl;
   // return;;
   //}
   // if here let's commit..
-  if(!imageObject.Exec("commit")){
-    cerr << "Couldn't commit the images to the database.. " << endl;
-    status.ok = false;
-    status.errorMessages.push_back("Couldn't commit the image to the database");
-  }
-  if(!thumbObject.Exec("commit")){
-    cerr << "couldn't exec for the thumb object, bugger " << endl;
-    status.ok = false;
-    status.errorMessages.push_back("Couldn't commit the thumbnail image to the database");
-  }
+  // This has already been done in the storeLargeObject command
+  // if(!imageObject.Exec("commit")){
+  //   cerr << "Couldn't commit the images to the database.. " << endl;
+  //   status.ok = false;
+  //   status.errorMessages.push_back("Couldn't commit the image to the database");
+  // }
+  // if(!thumbObject.Exec("commit")){
+  //   cerr << "couldn't exec for the thumb object, bugger " << endl;
+  //   status.ok = false;
+  //   status.errorMessages.push_back("Couldn't commit the thumbnail image to the database");
+  // }
+
   /// take care of the comments as well,,, but maybe that is most of the stuff done...
   // this is a real pain, but I need to find out what the index of the image we just added is. Fortunately, I can use the imageOid as this 
   // should be unique. But this is a real pain, to do, and I'm sure that there must be a better way of doing this. Probably this can all be
   // written as an SQL function,  -- could do with some better SQL programming skills.
-  PgDatabase conn(conninfo);
-  if(conn.ConnectionBad()){
-    cerr << "commit Ish Image to DB, -- I'm giving up on adding comments as I can't get a connection to check the image index " << endl;
-    status.ok = false;
-    status.errorMessages.push_back("Failed to write the annotation to the database due to connection failure");
-    writeStatus(status);
-    return;
-  }
+
+  // PgDatabase conn(conninfo);
+  // if(conn.ConnectionBad()){
+  //   cerr << "commit Ish Image to DB, -- I'm giving up on adding comments as I can't get a connection to check the image index " << endl;
+  //   status.ok = false;
+  //   status.errorMessages.push_back("Failed to write the annotation to the database due to connection failure");
+  //   writeStatus(status);
+  //   return;
+  // }
+
+
+
   ostringstream check;
   check << "select index from ish_images where image = " << imageOid;
-  if(!conn.Exec(check.str().c_str())){
-    cerr << "Couldn't do a select on the images data base ,, so can't add the comments, very sorry.. " << endl;
+  // if(!conn.Exec(check.str().c_str())){
+  //   cerr << "Couldn't do a select on the images data base ,, so can't add the comments, very sorry.. " << endl;
+  //   status.ok = false;
+  //   status.errorMessages.push_back("Failed to write the annotation to the database due to failure to obtain the image oid");
+  //   writeStatus(status);
+  //   return;
+  // }
+  // if(!conn.Tuples() == 1){
+  //   cerr << "Commit ish image to database, -- I coulnd't find the index for the image, so can't add comments.." << endl;
+  //   status.ok = false;
+  //   status.errorMessages.push_back("Failed to write the annotation to the database due to failure to obtain the image oid");
+  //   writeStatus(status);
+  //   return;
+  // }
+  
+  int lookup_error = 0;
+  vector<vector<string> > image_index_t = dbLookup(check.str(), lookup_error);
+  if(!image_index_t.size()){
+    cerr << "Unable to get an index from ish_images " << endl;
     status.ok = false;
-    status.errorMessages.push_back("Failed to write the annotation to the database due to failure to obtain the image oid");
-    writeStatus(status);
     return;
   }
-  if(!conn.Tuples() == 1){
-    cerr << "Commit ish image to database, -- I coulnd't find the index for the image, so can't add comments.." << endl;
-    status.ok = false;
-    status.errorMessages.push_back("Failed to write the annotation to the database due to failure to obtain the image oid");
-    writeStatus(status);
-    return;
-  }
-  int imageIndex = atoi(conn.GetValue(0, 0));
+  int imageIndex = atoi(image_index_t[0][0].c_str()); // conn.GetValue(0, 0));
   if(commitIshImageCommentsToDB(comments, imageIndex)){
     cout << "Ish Image Annotation succesfully added to the database " << endl;
   }else{
@@ -4293,11 +4662,11 @@ void ConnectionObject::commitIshImageToDB(){
   
 bool ConnectionObject::commitIshImageCommentsToDB(vector<Comment> comments, int imId){
   // 
-  PgDatabase conn(conninfo);
-  if(conn.ConnectionBad()){
-    cerr << "CommitIshImageComments to DB couldn't get a datbase connection, nothing added, very sorry.. " << endl;
-    return(false);
-  }
+  // PgDatabase conn(conninfo);
+  // if(conn.ConnectionBad()){
+  //   cerr << "CommitIshImageComments to DB couldn't get a datbase connection, nothing added, very sorry.. " << endl;
+  //   return(false);
+  // }
   int counter = 0;
   for(int i=0; i < comments.size(); i++){
     char* cleanComment = new char[comments[i].comment.length() * 2 + 1];
@@ -4305,17 +4674,23 @@ bool ConnectionObject::commitIshImageCommentsToDB(vector<Comment> comments, int 
     ostringstream entry;
     entry << "insert into ish_annotation (user_index, image, field, annotation) values (" << userId << ", " << imId << ", " << comments[i].index << ", '"
 	  << cleanComment << "')";
-    //cout << "entry string : " << entry.str() << endl;
-    if(!conn.Exec(entry.str().c_str())){
+    
+    int cmdTuples = dbCommand(entry.str());
+    if(!cmdTuples){
       cerr << "Couldn't insert the comment " << comments[i].comment.latin1() << endl;
-      cerr << conn.ErrorMessage() << endl;
     }
-    if(conn.CmdTuples() != 1){
-      cerr << "Didn't insert, not sure why, but error message follows " << endl
-	   << conn.ErrorMessage() << endl;
-    }else{
-      counter += conn.CmdTuples();
-    }
+    counter += cmdTuples;
+    //cout << "entry string : " << entry.str() << endl;
+    // if(!conn.Exec(entry.str().c_str())){
+    //   cerr << "Couldn't insert the comment " << comments[i].comment.latin1() << endl;
+    //   cerr << conn.ErrorMessage() << endl;
+    // }
+    // if(conn.CmdTuples() != 1){
+    //   cerr << "Didn't insert, not sure why, but error message follows " << endl
+    // 	   << conn.ErrorMessage() << endl;
+    // }else{
+    //   counter += conn.CmdTuples();
+    // }
     delete []cleanComment;
   }
   cout << "commitIshImageCommentsToDB inserted a total of  " << counter << "  lines into table ish_annotation " << endl;
@@ -4373,23 +4748,31 @@ void ConnectionObject::sendIshImage(){
     cerr << "coulnd't get an index from the last message (sendIshImage), message : " << endl; //lastMessage << endl;
     return;
   }
-  PgDatabase conn(conninfo);
-  if(conn.ConnectionBad()){
-    cerr << "sendIshImage : connection bad" << endl << conn.ErrorMessage() << endl;
-    return;
-  }
+  // PgDatabase conn(conninfo);
+  // if(conn.ConnectionBad()){
+  //   cerr << "sendIshImage : connection bad" << endl << conn.ErrorMessage() << endl;
+  //   return;
+  // }
   ostringstream query;
   query << "select probe, image from ish_images where index=" << index;
-  if(!conn.Exec(query.str().c_str())){
-    cerr << "couldn't query for the image " << endl << conn.ErrorMessage() << endl;
+  // if(!conn.Exec(query.str().c_str())){
+  //   cerr << "couldn't query for the image " << endl << conn.ErrorMessage() << endl;
+  //   return;
+  // }
+  // if(!conn.Tuples()){
+  //   cerr << "query didnt' return any images getting out of here" << endl;
+  //   return;
+  // }
+  
+  int lookup_error = 0;
+  vector<vector<string > > q_result = dbLookup(query.str(), lookup_error);
+  if(!q_result.size()){
+    cerr << "sendIshImage query result did not return an image index" << endl;
     return;
   }
-  if(!conn.Tuples()){
-    cerr << "query didnt' return any images getting out of here" << endl;
-    return;
-  }
-  int probeIndex = atoi(conn.GetValue(0, 0));
-  int oid = atoi(conn.GetValue(0, 1));
+
+  int probeIndex = atoi(q_result[0][0].c_str()); // conn.GetValue(0, 0));
+  int oid = atoi(q_result[0][1].c_str()); //conn.GetValue(0, 1));
   int buf_length = -1;
   char* buf = getLargeObject(oid, buf_length);
   if(!buf || buf_length <= 0){
@@ -5045,64 +5428,85 @@ void ConnectionObject::doCreateNewUser(){
   // first we need to check whether we have the appropriate privileges.. 
   ostringstream query;
   query << "select index from users where index = 1 and key1 = " << oldh[0] << " and key2=" << oldh[1]
-									      << " and key3=" << oldh[2];
-  PgDatabase conn(conninfo);
-  if(conn.ConnectionBad()){
-    cerr << "connection not so good.. " << endl;
-    return;
-  }
-  if(!conn.Exec(query.str().c_str())){
-    cerr << "Command didn't work.. " << endl;
-    cerr << conn.ErrorMessage() << endl;
-    return;
-  }
-  if(conn.Tuples() != 1){
-    cerr << "Wrong ID, or wrong passwords, or something like that " << endl;
+	<< " and key3=" << oldh[2];
+  // PgDatabase conn(conninfo);
+  // if(conn.ConnectionBad()){
+  //   cerr << "connection not so good.. " << endl;
+  //   return;
+  // }
+  // if(!conn.Exec(query.str().c_str())){
+  //   cerr << "Command didn't work.. " << endl;
+  //   cerr << conn.ErrorMessage() << endl;
+  //   return;
+  // }
+  // if(conn.Tuples() != 1){
+  //   cerr << "Wrong ID, or wrong passwords, or something like that " << endl;
+  //   return;
+  // }
+  
+  int lookup_error = 0;
+  vector<vector<string> > user_query = dbLookup(query.str(), lookup_error);
+  if(!user_query.size()){
+    cerr << "Wrong ID, or wrong password or something like that" << endl;
     return;
   }
   // ok. so we have the right user id. and we also have the appropriate password.. well.. we can now make the insert string
   ostringstream insertstring;
   insertstring << "insert into users (index, user_name, key1, key2, key3) values ("
 	       << "nextval('user_ids'), '" << words[4].latin1() << "', " << newh[0] << ", " << newh[1] << ", " << newh[2] << ")";
-  if(!conn.Exec(insertstring.str().c_str())){
-    cerr << "couldn't insert new user, not sure why.. but something or other.. " << endl;
+  int cmdTuples = dbCommand(insertstring.str());
+  if(!cmdTuples){
+    cerr << "Couldn't insert new user, not sure why" << endl;
+    return;
   }
-  if(conn.CmdTuples() != 1){
-    cerr << "same again, couldn't insert.. what's going on here.. " << endl;
-  }else{
-    // it worked and we need to update the the map<int, userInformation> userTable..
-    //    pSet->userTable.insert(make_pair(
-    ostringstream idQueryString;
-    idQueryString << "select index from users where user_name = '" << words[4].latin1() << "'";
-    if(!conn.Exec(idQueryString.str().c_str())){
-      cerr << "Coulnd't execute id lookup. " << endl;
-      cerr << conn.ErrorMessage() << endl;
-      return;
-    }
-    if(conn.Tuples() != 1){
-      cerr << "conn.Tuples isn't 1. This doesn't make much sense " << endl
-	   << "Tuples : " << conn.Tuples() << endl;
-      return;
-    }
-    int index = atoi(conn.GetValue(0, 0));
+
+  // if(!conn.Exec(insertstring.str().c_str())){
+  //   cerr << "couldn't insert new user, not sure why.. but something or other.. " << endl;
+  // }
+  // if(conn.CmdTuples() != 1){
+  //   cerr << "same again, couldn't insert.. what's going on here.. " << endl;
+  // }else{
+
+
+  // it worked and we need to update the the map<int, userInformation> userTable..
+  //    pSet->userTable.insert(make_pair(
+  ostringstream idQueryString;
+  idQueryString << "select index from users where user_name = '" << words[4].latin1() << "'";
+  vector<vector<string> > user_index = dbLookup(idQueryString.str(), lookup_error);
+  if(!user_index.size()){
+    cerr << "Unable to create new user" << endl;
+    return;
+  }
+
+  // if(!conn.Exec(idQueryString.str().c_str())){
+  //   cerr << "Coulnd't execute id lookup. " << endl;
+  //   cerr << conn.ErrorMessage() << endl;
+  //   return;
+  // }
+  // if(conn.Tuples() != 1){
+  //   cerr << "conn.Tuples isn't 1. This doesn't make much sense " << endl
+  // 	 << "Tuples : " << conn.Tuples() << endl;
+  //   return;
+  // }
+  int index = atoi(user_index[0][0].c_str()); //conn.GetValue(0, 0));
     // and now we do the insert.. first make sure it's not taken.. hmm 
     // hmm oh bugger that.
-    string uName(words[4].latin1());
-    string fName;
-    string lName;
-    pSet->userMutex->lock();
-    pSet->userTable.insert(make_pair(index, userInformation(index, uName, fName, lName)));
-    pSet->userMutex->unlock();
-    QCustomEvent* updateUsers = new QCustomEvent(1001);     // user is 1000.. 
-    QThread::postEvent(server, updateUsers);
-    sApp("<newUser>");
-    qiApp(index);
-    sApp(uName);
-    sApp(fName);
-    sApp(lName);
-    sApp("<newUserEnd>");
-    writeArray();  // it's quite easy after all.. 
-  }
+  string uName(words[4].latin1());
+  string fName;
+  string lName;
+  pSet->userMutex->lock();
+  pSet->userTable.insert(make_pair(index, userInformation(index, uName, fName, lName)));
+  pSet->userMutex->unlock();
+  QCustomEvent* updateUsers = new QCustomEvent(1001);     // user is 1000.. 
+  QThread::postEvent(server, updateUsers);
+  sApp("<newUser>");
+  qiApp(index);
+  sApp(uName);
+  sApp(fName);
+  sApp(lName);
+  sApp("<newUserEnd>");
+  writeArray();  // it's quite easy after all.. 
+  //  }
   
   // write some message to indicate if it worked or not. ADD later when we have proper mechanism for doing this..
 }

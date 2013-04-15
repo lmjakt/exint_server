@@ -44,7 +44,8 @@
 #include <sys/shm.h>
 #include <sys/socket.h>
 #include <netdb.h>
-#include <linux/tcp.h>
+#include <netinet/tcp.h>
+//#include <linux/tcp.h> // this causes errors ?
 #include <errno.h>
 #include <string.h>
 

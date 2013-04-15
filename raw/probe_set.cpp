@@ -28,7 +28,8 @@
 #include <iostream>
 #include <string>
 #include <qstring.h>
-#include <libpq++.h>
+//#include <libpq++.h>
+#include <libpq-fe.h>
 #include <algorithm>
 #include <stdlib.h>
 #include "probe_set.h"
@@ -214,14 +215,20 @@ probe_data::~probe_data(){   // and what about this???
 
 vector<probe_data> data_from_db(const char* conninfo) {
   // open up a connection to a database backend,, -lets just use a normal ascii cursor.. 
-  //const char* dbname = "dbname=expression";
-  PgCursor data(conninfo, "portal");    // still don't know why the portal
+  //  PgCursor data(conninfo, "portal");    // still don't know why the portal
+  PGconn* conn = PQconnectdb(conninfo);
+
   // check the backend..
-  if( data.ConnectionBad() ) {
-    cerr << "Connection to database '" << conninfo << "' failed." << endl
-	 << "Error returned: " << data.ErrorMessage() << endl;
+  if(!conn || (PQstatus(conn) != CONNECTION_OK)){
+    cerr << "Unable to connect to database: " << conninfo << endl;
     exit(1);
   }
+	 
+  // if( data.ConnectionBad() ) {
+  //   cerr << "Connection to database '" << conninfo << "' failed." << endl
+  // 	 << "Error returned: " << data.ErrorMessage() << endl;
+  //   exit(1);
+  // }
   // lets send some commands to the database FOR THE MOMENT: limit to data for chip 1 to keep the thingy..
 
   //// IMPORTANT NOTE : the probe_data table has a stupid structure and can have several lines for each probe set, even though it really shouldn't. It's based on a 
@@ -229,16 +236,28 @@ vector<probe_data> data_from_db(const char* conninfo) {
   //// -- and I will need to do something to update this when adding new probes.. hmmm. hmmmm.
 
 
-  if(!data.Declare("select a.*, b.chip from probe_data a, p_sets b where a.index=b.index order by index")){          // table created by the above joined, and stored in db for speed of access..
-    cerr << "DECLARE CURSOR command failed" << endl;
+  // if(!data.Declare("select a.*, b.chip from probe_data a, p_sets b where a.index=b.index order by index")){          // table created by the above joined, and stored in db for speed of access..
+  //   cerr << "DECLARE CURSOR command failed" << endl;
+  //   exit(1);
+  // }
+
+  PGresult* res = PQexec(conn, "select a.*, b.chip from probe_data a, p_sets b where a.index=b.index order by index");
+  if(PQresultStatus(res) != PGRES_TUPLES_OK){
+    cerr << "PQexec was not able to execute query\n"
+	 << PQresultErrorMessage(res) << endl;
     exit(1);
   }
-  // then fetch the data... 
-  if( !data.Fetch() ) {
-    cerr << "FETCH ALL command didn't return tuples properly" << endl;
-    exit(1);
-  }
-  int tuples = data.Tuples();
+  
+  
+
+
+  // // then fetch the data... 
+  // if( !data.Fetch() ) {
+  //   cerr << "FETCH ALL command didn't return tuples properly" << endl;
+  //   exit(1);
+  // }
+
+  int tuples = PQntuples(res); // data.Tuples();
   // create a vector of probe_data ..
   vector<probe_data> p_data(tuples);  // with the appropriate amount of space..
   // resize the vector afterwards. This is very ugly, but the best I can think of
@@ -248,22 +267,22 @@ vector<probe_data> data_from_db(const char* conninfo) {
   int p_index;
   int maxIndex = 0;
   for(int i=0; i < tuples; i++){
-    index = atoi(data.GetValue(i,0));
+    index = atoi(PQgetvalue(res, i, 0)); // data.GetValue(i,0));
     // for this one we shall be defining the p_data[index-i]
     p_index = index-1;
-    int ugid = atoi(data.GetValue(i, 3));
-    string uggene = data.GetValue(i, 4);
-    string ugtitle = data.GetValue(i, 5);
+    int ugid = atoi(PQgetvalue(res, i, 3)); // data.GetValue(i, 3));
+    string uggene = PQgetvalue(res, i, 4); //data.GetValue(i, 4);
+    string ugtitle = PQgetvalue(res, i, 5); // data.GetValue(i, 5);
     //uniGeneData tempdata(ugid, ugtitle, uggene);
     p_data[p_index].ugData.push_back(uniGeneData(ugid, ugtitle, uggene));
     if(!p_data[p_index].defined){
       p_data[p_index].index = index;
       p_data[p_index].defined = true;
-      p_data[p_index].afid = data.GetValue(i, 1);
-      p_data[p_index].gbid = data.GetValue(i, 2);
-      p_data[p_index].afdes = data.GetValue(i, 6);
-      p_data[p_index].tigrDescription = data.GetValue(i, 7);
-      p_data[p_index].chip = atoi(data.GetValue(i, 8));
+      p_data[p_index].afid = PQgetvalue(res, i, 1); // data.GetValue(i, 1);
+      p_data[p_index].gbid = PQgetvalue(res, i, 2); // data.GetValue(i, 2);
+      p_data[p_index].afdes = PQgetvalue(res, i, 6); // data.GetValue(i, 6);
+      p_data[p_index].tigrDescription = PQgetvalue(res, i, 7); // data.GetValue(i, 7);
+      p_data[p_index].chip = atoi(PQgetvalue(res, i, 8)); // data.GetValue(i, 8));
       p_data[p_index].go.resize(0);         // don't know if that's good or not.. 
     }
     if(index > maxIndex){
@@ -272,59 +291,43 @@ vector<probe_data> data_from_db(const char* conninfo) {
   }
   //close the cursor,, and lets leave it at that for the time being, it won't work anyway..
   p_data.resize(maxIndex);         // hopefully this will now work.. 
-  data.Close();
-  // then lets see if we can get ourselves some celera mapping,, I'm just worried that hmmm, but what the hell.. 
-  // if(! data.Declare("select * from affy_cel_match_annot")){
-//     cerr << "BUGGER, couldn't select from affy_cel_match_annot" << endl;
-//   }
-//   if(! data.Fetch() ){
-//     cerr << "couldn't fetch the affy cel match data" << endl;
-//   }
-//   cout << "got " << data.Tuples() << " tuples for the affy_cel_match query " << endl;
-//   int push_back_counter = 0;
-//   for(int i=0; i < data.Tuples(); i++){
-//     // let's hope we don't have a problem with memory allocation here.. hold on to your horses
-//     // this will be a little difficult..
-//     int p_index = atoi(data.GetValue(i, 0));
-//     p_index--;
-//     string CG = data.GetValue(i, 1);
-//     float exp = atof(data.GetValue(i, 2));
-//     float m = atof(data.GetValue(i, 3));
-//     string SF = data.GetValue(i, 4);
-//     string FN = data.GetValue(i, 5);
-//     string GN = data.GetValue(i, 6);
-//     string GS = data.GetValue(i, 7);
-//     string ND = data.GetValue(i, 8);
-//     // cout << "index: " << p_index << "\tCG : " << CG << "\tSF : " << SF << endl;
-//     //cout << "internal index: " << p_data[p_index].index << endl;
-//     p_data[p_index].celeraMatches.push_back(celeraMatch(CG, exp, m, SF, FN, GN, GS, ND));  // 
-//     push_back_counter++;
-//   }
-//   cout << "pushed back a total of " << push_back_counter << endl;
-//   data.Close();
+  PQclear(res);
+
+  //  data.Close();
 
   // then see if we can get ourselves some more data for the go..
-  if( !data.Declare("select a.index, b.generation, c.description from p_sets a, af_go_gen b, go c where a.af_id=b.af_id and b.go=c.index and a.chip=1 order by a.index, b.generation desc")){
-    cerr << "GO data declare didn't work so well.. " << endl;
+  // if( !data.Declare("select a.index, b.generation, c.description from p_sets a, af_go_gen b, go c where a.af_id=b.af_id and b.go=c.index and a.chip=1 order by a.index, b.generation desc")){
+  //   cerr << "GO data declare didn't work so well.. " << endl;
+  //   exit(1);
+  // }
+  
+  res = PQexec(conn, "select a.index, b.generation, c.description from p_sets a, af_go_gen b, go c where a.af_id=b.af_id and b.go=c.index and a.chip=1 order by a.index, b.generation desc");
+  if(PQresultStatus(res) != PGRES_TUPLES_OK){
+    cerr << "GO data query had some problem\n"
+	 << PQresultErrorMessage(res) << endl;
     exit(1);
   }
-  // fetch..
-  if( !data.Fetch() ) {
-    cerr << "Couldn't fetch all the GO data " << endl;
-    exit(1);
-  }
+  
+  // // fetch..
+  // if( !data.Fetch() ) {
+  //   cerr << "Couldn't fetch all the GO data " << endl;
+  //   exit(1);
+  // }
   int go_gen;
-  tuples = data.Tuples();
+  //  tuples = data.Tuples();
+  tuples = PQntuples(res);
   for(int i=0; i < tuples; i++){
-    index = atoi(data.GetValue(i, 0));
+    index = atoi(PQgetvalue(res, i, 0)); // data.GetValue(i, 0));
     p_index = index-1;
-    go_gen = atoi(data.GetValue(i, 1));
+    go_gen = atoi(PQgetvalue(res, i, 1)); // data.GetValue(i, 1));
     if((int)p_data[p_index].go.size() < (go_gen)){
       p_data[p_index].go.resize(15);             // I DON'T UNDERSTAND THIS, SOMEONE PLS. EXPLAIN..
     }
-    p_data[p_index].go[go_gen-1].push_back(data.GetValue(i,2));
+    p_data[p_index].go[go_gen-1].push_back(PQgetvalue(res, i, 2)); // data.GetValue(i,2));
   }
-  data.Close();
+  PQclear(res); 
+  PQfinish(conn);
+  //  data.Close();
   // And now finally, lets see if we can load the blastMatches,, just using the values in the thingy.. hmm.. 
   // the table ensembl_blast_matches has the following struture (at least at the moment..)..
   //
@@ -364,7 +367,7 @@ vector<probe_data> data_from_db(const char* conninfo) {
   // First do a join between the ensembl_blast_matches table and the annotation table and create
   // new blastMatch struct's for the appropriate probe_data records.. (in the p_data vector);
   //map<int, map<int, int> > blastMatchMap;          // key is the affy id, the inner map first is the blast match Id, and the final int is the vector position.. -- oh dear. sounds 
-//   if(!data.Declare("select distinct b.afid, b.blast_match, a.name, c.field_name, d.annotation, b.ensembl_length, b.af_length from ensembl_genes a, ensembl_blast_matches b, ensembl_fields c, ensembl_annotation d where a.index=b.ensembl_gid and a.index=d.gene and c.index=d.field and (c.index = 1 or c.index = 3 or c.index = 15 or c.index = 21) order by b.blast_match")){
+//   if(!data.Declare("select distinct b.afid, b.blast_match, a.name, c.field_name, d.annotation, b.ensembl_length, b.af_length from ensembl_genes a, endsembl_blast_matches b, ensembl_fields c, ensembl_annotation d where a.index=b.ensembl_gid and a.index=d.gene and c.index=d.field and (c.index = 1 or c.index = 3 or c.index = 15 or c.index = 21) order by b.blast_match")){
 //     cerr << "Couldn't select the annotation for the unigene things. and so forth and o son" << endl;
 //     cerr << data.ErrorMessage() << endl;
 //   }
