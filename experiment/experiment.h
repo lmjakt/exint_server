@@ -28,7 +28,7 @@
 #include <string>
 #include <qdatetime.h>
 #include "../netArray/netArray.h"
-#include <libpq++.h>
+//#include <libpq++.h>
 #include <vector>
 
 using namespace std;

@@ -54,8 +54,9 @@
 #include <vector>
 #include <set>
 #include <map>
+//#include <libpq.h>
+#include <libpq-fe.h>
 #include <libpq/libpq-fs.h>
-//#include <libpq++.h>
 #include <unistd.h>
 #include <crypt.h>
 #include <stdlib.h>
@@ -875,21 +876,6 @@ bool ConnectionObject::authenticate(){
   query << "select index from users where user_name = '" << currentUserName << "' and key1 = " << key1 << " and key2 = " << key2 << " and key3 = " << key3;
   // and then we just have to see if we return anything.. 
 
-  // I don't quite remember why I'm using the PgCursor interface. I have a feeling that it is broken
-  // PgCursor conn(conninfo, "portal");
-  // if(conn.ConnectionBad()){
-  //   cerr << "ConnectionObject::authenticate db connection not good" << endl;
-  //   return(false);
-  // }
-  // if(!conn.Declare(query.str().c_str())){
-  //   cerr << "ConnectionObject::authenticate conn.declare command didn't work: " << query << endl;
-  //   return(false);
-  // }
-  // if(!conn.Fetch()){
-  //   cerr << "ConnectionObject::authenticate conn.fetch didn't fetch anything" << endl;
-  //   return(false);
-  // }
-  
   int lookup_error = 0;
   vector<vector<string> > user_lookup = dbLookup(query.str(), lookup_error);
   if(lookup_error){
@@ -949,8 +935,8 @@ int ConnectionObject::dbCommand(string cmd, Oid* oid_value){
   int cmdTuples = atoi(PQcmdTuples(res));
   if(oid_value)
     *oid_value = PQoidValue(res);
-  PQclear(res);
-  PQfinish(conn);
+  PQclear(res); // this will free the pointer.
+  PQfinish(conn);   
   //delete escapedString;
   return(cmdTuples);
 }
@@ -3937,20 +3923,23 @@ void ConnectionObject::sendIshThumbnails(){
   }
   ///////////// seems that we cannot actually do the whole thing with just a large object but that we must make
   ///////////// another connection to the database as well..
+  /*
   PgDatabase conn(conninfo);
   if(conn.ConnectionBad()){
     cerr << "sendIshThumbNails connection bad : " << conn.ErrorMessage() << endl;
     return;
   }
+  */
   ostringstream query;    // probably not threadsafe, but for god's sake do I have to write my own class for everything ??
   query << "select index, thumbnail from ish_images where probe = " << index; 
+  /*
   if(!conn.Exec(query.str().c_str())){
     cerr << "Couldn't select thumbnail from ish_images, not sure why.. " << endl 
 	 << query.str() << endl
 	 << conn.ErrorMessage() << endl;
     return;
   }
-
+  */
   int lookup_error = 0;
   vector<vector<string> > tn_data = dbLookup(query.str(), lookup_error);
   if(!tn_data.size() || lookup_error){
@@ -4276,16 +4265,18 @@ void ConnectionObject::sendTissues(){
 }
 	 
 void ConnectionObject::sendIshAnnotationFields(){
-  PgDatabase conn(conninfo);
+  /*  PgDatabase conn(conninfo);
   if(conn.ConnectionBad()){
     cerr << "sendIshAnnotation connection is bad " << endl;
     return;
-  }
+    }*/
   const char* query = "select * from ish_annotation_fields";
-  if(!conn.Exec(query)){
+
+  /*  if(!conn.Exec(query)){
     cerr << "coudn't execute ish annotation field query " << endl;
     return;
   }
+  */
   int lookup_error = 0;
   vector<vector<string> > fields_data = dbLookup(query, lookup_error);
   if(!fields_data.size() || lookup_error){
@@ -5542,6 +5533,16 @@ void ConnectionObject::doChangePassword(){
   //cout << "query is: \n" << query.str() << endl;
   //const char* conninfo = "dbname=expression";
   //PgConnection conn(conninfo);
+  int changeOK = 1;
+  int cmdTuples = dbCommand( query.str() );
+  if(cmdTuples != 1){
+    cerr << "Password Change failed or went multiplied.. cmdTuples: " << cmdTuples << endl;
+    sApp(string("<ChangePassWordError>"));
+    sApp(string("<ChangePassWordErrorEnd>"));
+    writeArray();
+    changeOK = 0;
+  }
+  /*
   PgDatabase conn(conninfo);
   //  PgCursor conn(conninfo, "portal");
   if(conn.ConnectionBad()){
@@ -5556,17 +5557,20 @@ void ConnectionObject::doChangePassword(){
     cerr << "Error: " << conn.ErrorMessage() << endl;
     return;
   }
-  int changeOK;
+
   if(conn.CmdTuples() != 1){
     cerr << "Password Change failed or went multiplied.. cmdTuples: " << conn.CmdTuples() << endl;
     changeOK = 0;
   }else{
     changeOK = 1;
   }
-  sApp(string("<passWordChanged>"));
-  qiApp(changeOK);
-  sApp(string("<passWordChangedEnd>"));
-  writeArray();
+  */
+  if(changeOK){
+    sApp(string("<passWordChanged>"));
+    qiApp(changeOK);
+    sApp(string("<passWordChangedEnd>"));
+    writeArray();
+  }
 }
 
 void ConnectionObject::meanComparisonSort(){

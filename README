@@ -1,3 +1,9 @@
+BIG TROUBLE. PROBABLY NEED TO MANUALLY REMOVE AND INSTALL POSTGRESQL SO THAT I CAN MAKE USE
+OF LIBPQ++
+
+OR REMOVE THE DEPENDANCY ONCE AND FOR ALL.
+
+
 This application is useless without having the appropriate databases set up. For more information
 about this, and various databases communicate directly with me, or have a look around in some
 appropriate places (see end of this).

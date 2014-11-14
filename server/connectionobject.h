@@ -37,6 +37,7 @@
 #include <signal.h>            // need to be able to handle or ignore signals of different sorts. ?? 
 #include <time.h>              // since we store the sessionId as a value of time_t
 #include <libpq-fe.h>   // needed for the Oid type
+//#include <libpq.h>
 
 //#include "processor.h"
 #include "../netArray/netArray.h"
@@ -93,7 +94,7 @@ class ConnectionObject : public QObject, public QThread
 
  private:
 
-  typedef struct sessionData {
+  struct sessionData {
     sessionData(){      // do nothing..
     }
     int sessionIndex;

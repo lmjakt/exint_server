@@ -1,8 +1,8 @@
 TEMPLATE = app
-CONFIG = qt release pgsql thread
+CONFIG = qt release pgsql thread network
 CXXFLAGS += DQT_THREAD_SUPPORT -DHAVE_NAMESPACE_STD -DHAVE_CXX_STRING_HEADER -DDLLIMPORT=""
-INCPATH += /usr/local/pgsql/include
-LIBS += -L/usr/local/pgsql/lib -lpq -lpq++
+INCPATH += /usr/include/pgsql
+LIBS += -lpq 
 HEADERS = 	version.h \
 		server/server.h \
 		server/connectionobject.h \

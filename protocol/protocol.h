@@ -29,7 +29,7 @@
 #include <vector>
 #include <qdatetime.h>
 #include "../netArray/netArray.h"
-#include <libpq++.h>
+//#include <libpq++.h>
 
 using namespace std;
 
@@ -41,7 +41,8 @@ class ProtocolStep {
   ProtocolStep(int sid, int pid, int cid, string des, const char* conninfo);
   ~ProtocolStep(){}
 
-  bool dbEnter(PgDatabase& conn);          // enter into the database,, return the id.. (also set the id given).. 
+  bool dbEnter(const char* conninfo);          // enter into the database,, return the id.. (also set the id given).. 
+  //  bool dbEnter(PgDatabase& conn);          // enter into the database,, return the id.. (also set the id given).. 
   void serialise(NetArray* na);    
   bool fillFromDB(const char* conninfo);      // get the data from the database..
 
