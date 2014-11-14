@@ -41,14 +41,15 @@
 using namespace std;
 
 vector<float> splitString(string numbers){
-  // assumes structure is.. {"8.28282", "8.7837838", "2.383838"}
+  // assumes structure is.. {8.28282, 8.7837838, 2.383838}
   vector<float> f;      // the real numbers!!!
+  f.reserve(16);
   int first = 0;
-  int next;             // for the positions..
+  int next = numbers.npos; 
   while(1){
     first = numbers.find_first_not_of(",{}", first);
     next = numbers.find_first_of(",}", first+1);
-    //cout << "first: " << first << "\tnext: " << next << endl;
+    //    cout << "\tfirst: " << first << "\tnext: " << next << endl;
     if(first == numbers.npos || next == numbers.npos){
       break;
     }
@@ -132,17 +133,47 @@ void ProbeSetSet2::setData(const char* conninfo, const char* tableName){
     return;
   }
 
+  /*
   ostringstream os;
   os << "select * from " << tableName; // << " order by probe, experiment";
 
   const char* query = os.str().c_str(); 
   cout << "query for the data base is : " << query << endl;
 
+  /*
   PGresult* res = PQexec(conn, query);
 
   int nTuples = PQntuples(res);
   int nFields = PQnfields(res);
+  */
+  // doing a single query ends up using a lot of memory that isn't
+  // reclaimed efficiently. So, let's try to do this with a cursor instead
+
+  const char* cursor_name = "data_cursor";
+  ostringstream os;
+  os << "DECLARE " << cursor_name << " SCROLL CURSOR FOR SELECT * FROM " << tableName;
+  string query = os.str();
+
+  PGresult* work_res = PQexec(conn, "begin work");
+  if(PQresultStatus(work_res) != PGRES_COMMAND_OK){
+    cerr << "Unable to begin work" << endl;
+    cerr << PQresStatus( PQresultStatus(work_res) ) << endl;
+    exit(1);
+  }
+
+  PGresult* query_res = PQexec(conn, query.c_str());
+  if(PQresultStatus(query_res) != PGRES_COMMAND_OK){
+    cerr << "Failed to declare a cursor for fetching data. Giving up." << endl;
+    cerr << PQresStatus( PQresultStatus(query_res) ) << endl;
+    exit(1);
+  }
   
+  // and a string for fetching
+  uint fetch_no = 10000;
+  ostringstream of;
+  of << "FETCH FORWARD " << fetch_no << " FROM " << cursor_name;
+  string fetch_query = of.str();
+
   int currentIndex;
   vector<float> pm;
   vector<float> mm;
@@ -155,43 +186,60 @@ void ProbeSetSet2::setData(const char* conninfo, const char* tableName){
   // data should have a size of probe_data, and each one should contain an empty
   // data set. probe index should be -1 of the index. So, just use that.. 
 
-  //uint fetch_no = 10000;
   // I have a feeling that getting all the tuples in one go, may increase the
   // memory requirements. I should consider some alternatives here
-  
-  for(int i=0; i < nTuples; i++){
-    currentIndex = atoi(PQgetvalue(res, i, 0));
-    exp = atof(PQgetvalue(res, i, 1));
-    pmString = PQgetvalue(res, i, 2);
-    mmString = PQgetvalue(res, i, 3);
-    pm = splitString(pmString);
-    mm = splitString(mmString);
-    
-    if(experiments.find(exp) == experiments.end()){
-      cerr << "PUKE !!! CAN'T USE STRUCTURES LIKE THESE, REWRITE APPLICATION YOU FOOOL!!" << endl;
-      cerr << "couldn't find the experiment for experiment: " << exp << endl;
-      return;
+  PGresult* res = 0;
+  while(true){
+    if(res)
+      PQclear(res);
+    res = PQexec( conn, fetch_query.c_str() );
+    if(PQresultStatus(res) != PGRES_TUPLES_OK){
+      cerr << "Fetch didn't return nicely" << endl;
+      cerr << PQresStatus( PQresultStatus(res) ) << endl;
+      break;
     }
-    //      exptIndices.push_back(experiments[exp].dbaseIndex);
-    if(pm.size() != mm.size()){
-      cerr << "PUKE, going to segment fault if I don't sort this out.. vector sizes are different to each other.. " << endl;
-      return;
-    }
-    delta.resize(pm.size());
-    for(uint j=0; j < pm.size(); j++){
-      delta[j] = (pm[j]-mm[j]);     // the actual thing!!!
-    }
-    unsigned int i_pos = (currentIndex - 1);
-    if(i_pos < data.size()){
-      if(!data[i_pos]->allExptNo)
-	data[i_pos] = new probe_set(currentIndex, experiments.size());
-      addDataTo_probe_set( data[i_pos], delta, experiments[exp].dbaseIndex );
-    }else{
-      cerr << "probeSetSet2::setData i_pos is too large " << i_pos << " >= " << data.size() << endl;
-      exit(1);
+    int nTuples = PQntuples(res);
+    cout << nTuples << endl;
+    if(!nTuples)
+      break;
+    for(int i=0; i < nTuples; i++){
+      currentIndex = atoi(PQgetvalue(res, i, 0));
+      exp = atof(PQgetvalue(res, i, 1));
+      pmString = PQgetvalue(res, i, 2);
+      mmString = PQgetvalue(res, i, 3);
+      pm = splitString(pmString);
+      mm = splitString(mmString);
+      
+      if(true){
+	if(experiments.find(exp) == experiments.end()){
+	  cerr << "PUKE !!! CAN'T USE STRUCTURES LIKE THESE, REWRITE APPLICATION YOU FOOOL!!" << endl;
+	  cerr << "couldn't find the experiment for experiment: " << exp << endl;
+	  return;
+	}
+	//      exptIndices.push_back(experiments[exp].dbaseIndex);
+	if(pm.size() != mm.size()){
+	  cerr << "PUKE, going to segment fault if I don't sort this out.. vector sizes are different to each other.. " << endl;
+	  return;
+	}
+	delta.resize(pm.size());
+	for(uint j=0; j < pm.size(); j++){
+	  delta[j] = (pm[j]-mm[j]);     // the actual thing!!!
+	}
+	unsigned int i_pos = (currentIndex - 1);
+	if(i_pos < data.size()){
+	  if(!data[i_pos]->allExptNo)
+	    data[i_pos] = new probe_set(currentIndex, experiments.size());
+	  addDataTo_probe_set( data[i_pos], delta, experiments[exp].dbaseIndex );
+	}else{
+	  cerr << "probeSetSet2::setData i_pos is too large " << i_pos << " >= " << data.size() << endl;
+	  exit(1);
+	}
+      }
     }
   }
   PQclear(res);
+  PQclear(query_res);
+  PQclear(work_res);
   PQfinish(conn);
 }
 
@@ -860,7 +908,7 @@ void ProbeSetSet2::guessGenes(){
     vector<float> upstreamScores(probeData[i].probeSetMatches.size());
     bool print = false;
     //bool print = (i == 20476 || i == 17953 || i == 21113);
-    cout << "index : " << i << "   probe set matches size : " << probeData[i].probeSetMatches.size() << endl;
+    // cout << "index : " << i << "   probe set matches size : " << probeData[i].probeSetMatches.size() << endl;
     for(uint j=0; j < probeData[i].probeSetMatches.size(); j++){
       // get an iterator for the chromAnnotation..
       map<string, chromAnnotation*>::iterator it = chromosomeAnnotation.find(probeData[i].probeSetMatches[j].chromosome);
