@@ -133,41 +133,30 @@ void ProbeSetSet2::setData(const char* conninfo, const char* tableName){
     return;
   }
 
-  /*
-  ostringstream os;
-  os << "select * from " << tableName; // << " order by probe, experiment";
-
-  const char* query = os.str().c_str(); 
-  cout << "query for the data base is : " << query << endl;
-
-  /*
-  PGresult* res = PQexec(conn, query);
-
-  int nTuples = PQntuples(res);
-  int nFields = PQnfields(res);
-  */
   // doing a single query ends up using a lot of memory that isn't
-  // reclaimed efficiently. So, let's try to do this with a cursor instead
+  // reclaimed efficiently. So, instead we'll use a cursor.
 
   const char* cursor_name = "data_cursor";
   ostringstream os;
   os << "DECLARE " << cursor_name << " SCROLL CURSOR FOR SELECT * FROM " << tableName;
   string query = os.str();
 
-  PGresult* work_res = PQexec(conn, "begin work");
-  if(PQresultStatus(work_res) != PGRES_COMMAND_OK){
+  PGresult* res = PQexec(conn, "begin work");
+  if(PQresultStatus(res) != PGRES_COMMAND_OK){
     cerr << "Unable to begin work" << endl;
-    cerr << PQresStatus( PQresultStatus(work_res) ) << endl;
+    cerr << PQresStatus( PQresultStatus(res) ) << endl;
     exit(1);
   }
+  PQclear(res);
 
-  PGresult* query_res = PQexec(conn, query.c_str());
-  if(PQresultStatus(query_res) != PGRES_COMMAND_OK){
+  res = PQexec(conn, query.c_str());
+  if(PQresultStatus(res) != PGRES_COMMAND_OK){
     cerr << "Failed to declare a cursor for fetching data. Giving up." << endl;
-    cerr << PQresStatus( PQresultStatus(query_res) ) << endl;
+    cerr << PQresStatus( PQresultStatus(res) ) << endl;
     exit(1);
   }
-  
+  PQclear(res);
+
   // and a string for fetching
   uint fetch_no = 10000;
   ostringstream of;
@@ -186,9 +175,6 @@ void ProbeSetSet2::setData(const char* conninfo, const char* tableName){
   // data should have a size of probe_data, and each one should contain an empty
   // data set. probe index should be -1 of the index. So, just use that.. 
 
-  // I have a feeling that getting all the tuples in one go, may increase the
-  // memory requirements. I should consider some alternatives here
-  PGresult* res = 0;
   while(true){
     if(res)
       PQclear(res);
@@ -199,7 +185,8 @@ void ProbeSetSet2::setData(const char* conninfo, const char* tableName){
       break;
     }
     int nTuples = PQntuples(res);
-    cout << nTuples << endl;
+    counter += nTuples;
+    cout << counter << endl;
     if(!nTuples)
       break;
     for(int i=0; i < nTuples; i++){
@@ -216,14 +203,13 @@ void ProbeSetSet2::setData(const char* conninfo, const char* tableName){
 	  cerr << "couldn't find the experiment for experiment: " << exp << endl;
 	  return;
 	}
-	//      exptIndices.push_back(experiments[exp].dbaseIndex);
 	if(pm.size() != mm.size()){
 	  cerr << "PUKE, going to segment fault if I don't sort this out.. vector sizes are different to each other.. " << endl;
 	  return;
 	}
 	delta.resize(pm.size());
 	for(uint j=0; j < pm.size(); j++){
-	  delta[j] = (pm[j]-mm[j]);     // the actual thing!!!
+	  delta[j] = (pm[j]-mm[j]);     // PM - MM
 	}
 	unsigned int i_pos = (currentIndex - 1);
 	if(i_pos < data.size()){
@@ -238,8 +224,8 @@ void ProbeSetSet2::setData(const char* conninfo, const char* tableName){
     }
   }
   PQclear(res);
-  PQclear(query_res);
-  PQclear(work_res);
+  res = PQexec(conn, "commit work");  // for completeness sake
+  PQclear(res);
   PQfinish(conn);
 }
 

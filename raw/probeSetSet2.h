@@ -40,6 +40,10 @@
 using namespace std;    // bad
 
 
+// This class has no destructor though it should do.
+// Currently this doesn't matter as it's only destroyed upon
+// program exit. But it's not good.
+
 class ProbeSetSet2
 {
  public:
