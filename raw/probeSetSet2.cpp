@@ -44,8 +44,8 @@ vector<float> splitString(string numbers){
   // assumes structure is.. {8.28282, 8.7837838, 2.383838}
   vector<float> f;      // the real numbers!!!
   f.reserve(16);
-  int first = 0;
-  int next = numbers.npos; 
+  unsigned long first = 0;
+  unsigned long next = numbers.npos; 
   while(1){
     first = numbers.find_first_not_of(",{}", first);
     next = numbers.find_first_of(",}", first+1);
@@ -155,7 +155,8 @@ void ProbeSetSet2::setData(const char* conninfo, const char* tableName){
     cerr << PQresStatus( PQresultStatus(res) ) << endl;
     exit(1);
   }
-  PQclear(res);
+  //  PQclear(res);
+  //  Don't clear res here, but do it at the beginning of the loop instead.
 
   // and a string for fetching
   uint fetch_no = 10000;
@@ -174,10 +175,11 @@ void ProbeSetSet2::setData(const char* conninfo, const char* tableName){
 
   // data should have a size of probe_data, and each one should contain an empty
   // data set. probe index should be -1 of the index. So, just use that.. 
+  cout << "res has an address of : " << res << "  : (" << (long)res << ")" << endl;
 
   while(true){
-    if(res)
-      PQclear(res);
+    //if(res) // PQclear does not set res to 0, so this doesn't work
+    PQclear(res);
     res = PQexec( conn, fetch_query.c_str() );
     if(PQresultStatus(res) != PGRES_TUPLES_OK){
       cerr << "Fetch didn't return nicely" << endl;
